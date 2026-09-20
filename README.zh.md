@@ -24,6 +24,18 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 
 与 OpenAI 无关。不 MITM `chatgpt.com`，也不改 `browser-service.mjs`。
 
+## 实测版本
+
+本机验证过：
+
+| 组件 | 版本 |
+|---|---|
+| ChatGPT.app | **26.915.31945**（CFBundleVersion 9922） |
+| Browser / Chrome 插件（`openai-bundled`） | **26.915.31945** |
+| `BROWSER_USE_CODEX_APP_VERSION` | **26.915.31945** |
+
+该版本的 `browser-service.mjs` 仍会把 `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` 映射为跳过 `check-url-site-status`。ChatGPT 更新常会升这个版本并改写 `node_repl`；再跑 `./install.sh status`，或依赖 `--persist`。
+
 ---
 
 ## 其他站点要不要手动加？
@@ -45,7 +57,7 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 
 ## 一键安装（macOS）
 
-需要：macOS、已安装 ChatGPT.app 或 Codex.app、Python 3.9+。
+需要：macOS、已安装 ChatGPT.app 或 Codex.app（实测 **26.915.31945**）、Python 3.9+。
 
 ```bash
 git clone https://github.com/leixyou/bypass-codex-site-safety.git

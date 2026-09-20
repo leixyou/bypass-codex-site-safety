@@ -24,6 +24,18 @@ That skips `check-url-site-status`. ChatGPT updates rewrite `~/.codex/config.tom
 
 Not affiliated with OpenAI. Does not MITM `chatgpt.com` and does not patch `browser-service.mjs`.
 
+## Tested on
+
+Verified locally against:
+
+| Component | Version |
+|---|---|
+| ChatGPT.app | **26.915.31945** (CFBundleVersion 9922) |
+| Browser / Chrome plugin (`openai-bundled`) | **26.915.31945** |
+| `BROWSER_USE_CODEX_APP_VERSION` | **26.915.31945** |
+
+On this build, `browser-service.mjs` still maps `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` to skipping `check-url-site-status`. ChatGPT updates often bump this version and rewrite `node_repl`; re-run `./install.sh status` or rely on `--persist`.
+
 ---
 
 ## Do I have to add every site?
@@ -45,7 +57,7 @@ Not affiliated with OpenAI. Does not MITM `chatgpt.com` and does not patch `brow
 
 ## One-shot install (macOS)
 
-Needs: macOS, ChatGPT.app or Codex.app, Python 3.9+.
+Needs: macOS, ChatGPT.app or Codex.app **26.915.31945** (tested), Python 3.9+.
 
 ```bash
 git clone https://github.com/leixyou/bypass-codex-site-safety.git
