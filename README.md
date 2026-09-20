@@ -1,8 +1,10 @@
 # bypass-codex-site-safety
 
+[English](README.md) · [中文](README.zh.md)
+
 Bypass Codex / ChatGPT Desktop **Browser Use site-safety policy** on your own machine.
 
-Codex 打开淘宝、1688、Pixiv 等站点时，经常直接报：
+When Codex opens Taobao, 1688, Pixiv, and similar sites it often fails immediately with:
 
 ```text
 Browser Use rejected this action due to browser security policy.
@@ -10,23 +12,40 @@ Reason: The site-safety policy blocks this action; no user permission prompt or 
 Browser use is not permitted on https://www.taobao.com.
 ```
 
-Settings 里 Allow browsing、`~/.codex/browser/config.toml` 白名单都压不过这层。原因是 **云端** `site_status`，不是 Chrome 扩展权限。
+Allowing the site in Settings or in `~/.codex/browser/config.toml` does not override this. The decision is a **cloud** `site_status` check, not a Chrome-extension permission.
 
-本工具打开客户端里已经存在的 local-testing 开关：
+This tool turns on a flag the official plugin already implements:
 
 ```text
 BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 ```
 
-从而跳过 `check-url-site-status`。ChatGPT 一更新会把 `~/.codex/config.toml` 里的 `node_repl` 改回去，所以默认安装带 macOS LaunchAgent，更新后再自动补上。
+That skips `check-url-site-status`. ChatGPT updates rewrite `~/.codex/config.toml` and drop the `node_repl` wrap, so the default install also adds a macOS LaunchAgent that re-applies the patch.
 
-Not affiliated with OpenAI. Uses a flag the official plugin already implements. Does not MITM `chatgpt.com` and does not patch `browser-service.mjs`.
+Not affiliated with OpenAI. Does not MITM `chatgpt.com` and does not patch `browser-service.mjs`.
 
 ---
 
-## 一键安装（macOS）
+## Do I have to add every site?
 
-需要：macOS、已安装 ChatGPT.app 或 Codex.app、Python 3.9+。
+**No.** Once local-testing mode is on, the cloud site-safety check is skipped for **all** `http://` and `https://` hosts. You do not run `--allow` per site to bypass *site-safety policy*.
+
+`--preset` / `--allow` only write **local origin allowlists**. In this same security mode, origin-access is also skipped, so those lists are belt-and-suspenders, not required for the bypass.
+
+| Layer | After `./install.sh` |
+|---|---|
+| Cloud `aura/site_status` (the “site-safety policy” error) | Skipped for every site |
+| Local origin allowlist | Optional; `shopping-cn` is applied by default |
+| Computer Use “this Chrome URL is not allowed” | **Not** covered — separate kill switch |
+| Model refusing after an old `site_status` error | Use a **new** Codex thread |
+
+`localhost` / `127.0.0.1` were already exempt from `site_status`.
+
+---
+
+## One-shot install (macOS)
+
+Needs: macOS, ChatGPT.app or Codex.app, Python 3.9+.
 
 ```bash
 git clone https://github.com/leixyou/bypass-codex-site-safety.git
@@ -35,95 +54,95 @@ chmod +x install.sh
 ./install.sh
 ```
 
-无参数时等于：
+With no arguments that is:
 
 ```bash
 python3 codex_browser_lab.py install --preset shopping-cn --persist
 ```
 
-然后 **新开一条 Codex thread**（或重启 ChatGPT.app）。已经在跑的 `node_repl` 不会继承新环境变量。
+Then start a **new Codex thread** (or restart ChatGPT.app). Already-running `node_repl` processes keep the old environment.
 
-`shopping-cn` 预设会放行：
+The `shopping-cn` preset allowlists:
 
-`taobao.com` · `tmall.com` · `1688.com` · `alicdn.com` · `alipay.com`（主域 + 子域）
+`taobao.com` · `tmall.com` · `1688.com` · `alicdn.com` · `alipay.com` (apex + subdomains)
+
+That preset is convenience only. Security mode is what bypasses site-safety globally.
 
 ---
 
-## 这不是浏览器插件
+## This is not a Chrome extension
 
-检查发生在 Codex 的 Node 插件 `browser-service.mjs`，每次导航都会请求：
+The check runs in Codex’s Node plugin `browser-service.mjs`. Every navigation hits:
 
 ```http
 GET https://chatgpt.com/backend-api/aura/site_status
-    ?site_url=<目标 URL>
+    ?site_url=<target URL>
     &url_request_source=codex_browser_use
 ```
 
-`feature_status.agent === true` 就抛 `site_status_blocked`。官方 Chrome 扩展只是 CDP / native pipe 后端，拦不住这条请求。把官方 Browser Use 再封装成 MCP，只要还走这份 `browser-service.mjs`，淘宝照样挂。
+If `feature_status.agent === true`, the plugin throws `site_status_blocked`. The official Chrome extension is only the CDP / native-pipe backend; it never sees this request. Wrapping official Browser Use as MCP still fails on Taobao if it still loads that `browser-service.mjs`.
 
-相关 issue：
+Related issues:
 
 - [openai/codex#29343](https://github.com/openai/codex/issues/29343) — 1688 / Taobao
-- [openai/codex#42932](https://github.com/openai/codex/issues/42932) — Pixiv，用户白名单无效
-
-`localhost` / `127.0.0.1` 本身不做 `site_status`。本工具不走反代，只开插件自带的 testing mode。
+- [openai/codex#42932](https://github.com/openai/codex/issues/42932) — Pixiv; user allowlist ignored
 
 ---
 
-## 命令
+## Commands
 
 ```bash
-# 是否生效
+# is it active?
 ./install.sh status
 
-# 只跳过 site_status，不动 origin 白名单
+# skip site_status only; do not touch origin allowlists
 python3 codex_browser_lab.py install --persist
 
-# 额外站点
+# extra local allowlist entries (optional)
 python3 codex_browser_lab.py install --persist --preset shopping-cn --allow pixiv.net
 
-# 预览，不写盘
+# preview, no writes
 python3 codex_browser_lab.py install --preset shopping-cn --dry-run
 
-# 卸载（保留 origin 白名单）
+# uninstall (keeps origin allowlists)
 python3 codex_browser_lab.py uninstall
 ```
 
-`--persist` 会安装：
+`--persist` installs:
 
 `~/Library/LaunchAgents/com.codex-browser-lab.repair.plist`
 
-监控 `~/.codex/config.toml` 和插件缓存；ChatGPT 更新改回去之后自动 `repair`。
+It watches `~/.codex/config.toml` and the plugin cache. After a ChatGPT update reverts the wrap, `repair` runs again.
 
 ---
 
-## 改了哪些文件
+## Files it changes
 
-| 路径 | 作用 |
+| Path | Role |
 |---|---|
-| `~/.codex/mcp-wrappers/node-repl-security-mode.sh` | wrapper：export 开关，再 `exec` 原版签名过的 `node_repl` |
-| `~/.codex/config.toml` `[mcp_servers.node_repl]` | `command` 指向 wrapper；写入 `BROWSER_USE_SECURITY_MODE` |
-| `~/.codex/config.toml` `[browser_use.origins.*]` | 可选 origin 放行表 |
-| `~/.codex/browser/config.toml` | 可选 `allowed` 数组 |
-| `~/.codex/plugins/cache/openai-bundled/unified-computer-use/*/.mcp.json` | CUA 环境变量 + `CUA_REPL_NODE_REPL_PATH` |
+| `~/.codex/mcp-wrappers/node-repl-security-mode.sh` | Wrapper: export the flag, then `exec` the signed `node_repl` |
+| `~/.codex/config.toml` `[mcp_servers.node_repl]` | Point `command` at the wrapper; set `BROWSER_USE_SECURITY_MODE` |
+| `~/.codex/config.toml` `[browser_use.origins.*]` | Optional origin allow tables |
+| `~/.codex/browser/config.toml` | Optional `allowed` arrays |
+| `~/.codex/plugins/cache/openai-bundled/unified-computer-use/*/.mcp.json` | CUA env + `CUA_REPL_NODE_REPL_PATH` |
 
-wrapper 用 `exec`，运行中的进程镜像仍是官方 `node_repl`，native pipe 的代码签名身份不变。
+The wrapper uses `exec`, so the running image is still official `node_repl` and the native-pipe code-signing identity does not change.
 
-**不会做的事：**
+It does **not**:
 
-- 不劫持 `chatgpt.com/backend-api/aura/site_status`
-- 不改 `browser-service.mjs`（升级即失效）
-- 不动 Computer Use 那套「当前 Chrome URL 不允许」的独立杀会话逻辑
+- Intercept `chatgpt.com/backend-api/aura/site_status`
+- Patch `browser-service.mjs` (that dies on the next upgrade)
+- Touch Computer Use’s separate “current Chrome URL is not allowed” session killer
 
 ---
 
-## 怎么确认生效
+## Verify
 
 ```bash
 python3 codex_browser_lab.py status
 ```
 
-期望：
+You want:
 
 ```text
 config command      .../mcp-wrappers/node-repl-security-mode.sh
@@ -132,40 +151,29 @@ config ok           True
 live pid=...        mode=disabled-for-local-testing
 ```
 
-`config ok true` 但 live process 仍是 `<unset>`：配置已写上，当前会话还是旧进程。新开 thread。
+`config ok true` but live processes still `<unset>`: the file is patched, the current session is an old process. Open a new thread.
 
-更新 ChatGPT 后再跑一次 `status`。若 `config ok false` 且装了 `--persist`，等几秒让 LaunchAgent 回补；没有 persist 就再执行 `./install.sh`。
-
----
-
-## 限制
-
-- **模型拒绕过**：旧会话里已经吃过 `site_status` 错误时，模型可能按「禁止 workaround」拒绝继续。换新 thread。
-- **Computer Use**：Chrome 停在被拦 URL 上时，Computer Use 仍可能整段停掉。本工具只管 Browser Use / Chrome plugin。
-- **更新覆盖**：插件缓存目录名随版本变。`--persist` 就是为这个准备的。
-- macOS only（LaunchAgent）。Windows 需要的话请开 issue。
+After a ChatGPT update, run `status` again. If `config ok false` and you installed `--persist`, wait a few seconds for the LaunchAgent. Without persist, re-run `./install.sh`.
 
 ---
 
-## 卸载
+## Limits
+
+- **Model refusal:** if an old thread already saw a `site_status` error, the model may refuse to continue (“no workarounds”). Use a new thread.
+- **Computer Use:** if Chrome is sitting on a blocked URL, Computer Use can still abort the session. This tool only covers Browser Use / the Chrome plugin.
+- **Updates:** plugin cache directory names change with the app version. That is why `--persist` exists.
+- macOS only (LaunchAgent). Open an issue if you need Windows.
+
+---
+
+## Uninstall
 
 ```bash
 python3 codex_browser_lab.py uninstall
 ```
 
-恢复官方 `node_repl` 路径、删掉 env 开关和 LaunchAgent。origin 白名单默认保留，要删自己改 `config.toml`。
+Restores the official `node_repl` path, removes the env flag and LaunchAgent. Origin allowlists are left in place unless you delete them from `config.toml` yourself.
 
----
+## License
 
-## English
-
-Codex Browser Use asks `https://chatgpt.com/backend-api/aura/site_status` before every navigation. A positive `feature_status.agent` fails closed with *site-safety policy*, even when the user allowlisted the origin. This repo enables the plugin’s own `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing`, which skips that check, and optionally expands origin allowlists.
-
-```bash
-git clone https://github.com/leixyou/bypass-codex-site-safety.git
-cd bypass-codex-site-safety
-./install.sh          # macOS: shopping-cn preset + LaunchAgent
-./install.sh status
-```
-
-Start a **new** Codex thread afterwards. MIT licensed. Not affiliated with OpenAI.
+MIT
