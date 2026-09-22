@@ -130,6 +130,7 @@ Healthy output:
 ```text
 platform            win32
 CODEX_HOME          C:\Users\<you>\.codex
+flag support        ok      (browser-service.mjs 26.915.31945 implements it)
 official node_repl  ...\runtimes\cua_node\<hash>\bin\node_repl.exe
 watcher             running=True autostart=True
 persist             CodexBrowserLabRepair=installed CodexBrowserLabRepairLogon=absent
@@ -173,6 +174,12 @@ from `config.toml` yourself.
   session. This tool only covers Browser Use / the Chrome plugin.
 - **Updates:** a Codex/ChatGPT update regenerates `config.toml`. The watcher covers
   this as long as it is running; without `--persist`, re-run `.\install.ps1`.
+  Version-dependent paths are followed automatically: the plugin version directory
+  (`unified-computer-use/*/`, `browser/*/`) is globbed and `node_repl` is resolved
+  from the `command` Codex itself writes, so a new runtime hash needs no action.
+  The one thing an update *can* take away is the flag itself — `status` reports
+  `flag support`, and the watcher writes a `WARNING` line to its log if a new
+  `browser-service.mjs` no longer implements `disabled-for-local-testing`:
 - **Logon Task is optional:** registering an `ONLOGON` Scheduled Task needs an
   elevated shell. It is skipped with a warning when not elevated; the 5-minute task
   already re-applies the patch shortly after a reboot.

@@ -214,6 +214,40 @@ def official_node_repl() -> Path | None:
     return None
 
 
+def security_mode_support() -> tuple[bool | None, str]:
+    """Does the *installed* browser-service.mjs still implement the flag?
+
+    This is the one thing an app update can take away: the plumbing (plugin
+    version directory, node_repl runtime hash) follows `command` and globs, but
+    if OpenAI drops `disabled-for-local-testing` the patch becomes a no-op and
+    nothing else would notice. Returns (supported, version-or-reason).
+    """
+    root = plugin_cache() / "browser"
+    candidates: list[Path] = []
+    if root.is_dir():
+        try:
+            candidates = sorted(
+                root.glob("*/scripts/browser-service.mjs"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            candidates = []
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        version = path.parent.parent.name
+        supported = (
+            "disabled-for-local-testing" in text and "check-url-site-status" in text
+        )
+        return supported, version
+    return None, "browser-service.mjs not found"
+
+
 def log(msg: str, *, quiet: bool = False, important: bool = False) -> None:
     if important or not quiet:
         print(msg, flush=True)
@@ -722,6 +756,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     )
                 )
                 _append_log("watch: Codex rewrote its config; patch re-applied")
+                supported, version = security_mode_support()
+                if supported is False:
+                    _append_log(
+                        f"watch: WARNING - browser-service.mjs {version} no longer "
+                        f"implements {MODE}; the patch is a no-op on this build"
+                    )
         except Exception as exc:  # noqa: BLE001 - a watcher must never die
             _append_log(f"watch error: {exc!r}")
         time.sleep(interval)
@@ -1066,6 +1106,15 @@ def cmd_install(args: argparse.Namespace) -> int:
     if node_repl is None:
         target = "Codex/ChatGPT node_repl" if IS_WIN else "ChatGPT.app / Codex.app node_repl"
         raise SystemExit(f"{target} not found")
+
+    supported, version = security_mode_support()
+    if supported is False:
+        log(
+            f"warn: browser-service.mjs {version} no longer implements {MODE}; "
+            "this patch would have no effect on that build.",
+            quiet=args.quiet,
+            important=True,
+        )
     if IS_WIN:
         log(f"node_repl: {node_repl}", quiet=args.quiet)
     else:
@@ -1153,6 +1202,13 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     print(f"platform            {sys.platform}")
     print(f"CODEX_HOME          {codex_home()}")
+    supported, version = security_mode_support()
+    if supported is True:
+        print(f"flag support        ok      (browser-service.mjs {version} implements it)")
+    elif supported is False:
+        print(f"flag support        GONE    (browser-service.mjs {version} dropped it!)")
+    else:
+        print(f"flag support        unknown ({version})")
     if IS_WIN:
         print(f"official node_repl  {official_node_repl()}")
         print(f"watcher             running={watcher_running()} autostart={get_win_run(WIN_WATCH) is not None}")
