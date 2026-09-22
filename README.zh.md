@@ -1,6 +1,6 @@
 # bypass-codex-site-safety
 
-[English](README.md) · [中文](README.zh.md)
+[English](README.md) · [中文](README.zh.md) · [Windows 指南](README.windows.md)
 
 在本机绕过 Codex / ChatGPT Desktop 的 **Browser Use site-safety policy**。
 
@@ -82,6 +82,34 @@ python3 codex_browser_lab.py install --preset shopping-cn --persist
 
 ---
 
+## 一键安装（Windows）
+
+需要：Windows 10/11、已安装 Codex / ChatGPT Desktop（先运行一次，让
+`%USERPROFILE%\.codex\config.toml` 生成）、Python 3.9+。
+
+```powershell
+git clone https://github.com/leixyou/bypass-codex-site-safety.git
+cd bypass-codex-site-safety
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+无参数时等于：
+
+```powershell
+python codex_browser_lab.py install --preset shopping-cn --persist
+```
+
+然后 **重启 Codex / ChatGPT Desktop**（或新开一条 Codex thread）。已经在跑的
+`node_repl.exe` 不会继承新环境变量。
+
+Windows 上不需要 wrapper：开关直接写进 `[mcp_servers.node_repl.env]` 表，`command` 仍指向
+官方二进制。注意 Codex **每次启动都会重写整个 `node_repl` 块**，而且 `node_repl` 的环境由
+Codex 自己拼装（所以 `setx` 的系统变量传不进去）——`--persist` 因此装了一个小守护进程，
+在约两秒内把补丁补回去，之后 **新开一条 Codex thread** 即可生效。详见
+[README.windows.md](README.windows.md)。
+
+---
+
 ## 这不是浏览器插件
 
 检查发生在 Codex 的 Node 插件 `browser-service.mjs`，每次导航都会请求：
@@ -120,9 +148,12 @@ python3 codex_browser_lab.py install --preset shopping-cn --dry-run
 python3 codex_browser_lab.py uninstall
 ```
 
-`--persist` 会安装：
+`--persist` 会安装一个自动回补的守护：
 
-`~/Library/LaunchAgents/com.codex-browser-lab.repair.plist`
+| 平台 | 机制 |
+|---|---|
+| macOS | `~/Library/LaunchAgents/com.codex-browser-lab.repair.plist` |
+| Windows | HKCU `Run` 守护进程，约 2 秒内自动补回补丁；另加 `CodexBrowserLabRepair` 计划任务（每 5 分钟，`--interval MIN` 可调）兜底 |
 
 监控 `~/.codex/config.toml` 和插件缓存；ChatGPT 更新改回去之后自动 `repair`。
 
@@ -139,6 +170,9 @@ python3 codex_browser_lab.py uninstall
 | `~/.codex/plugins/cache/openai-bundled/unified-computer-use/*/.mcp.json` | CUA 环境变量 + `CUA_REPL_NODE_REPL_PATH` |
 
 wrapper 用 `exec`，运行中的进程镜像仍是官方 `node_repl`，native pipe 的代码签名身份不变。
+
+**Windows** 上不生成 wrapper：上表只有第 2–5 行适用，`command` 保持指向官方
+`node_repl.exe`。见 [README.windows.md](README.windows.md)。
 
 **不会做的事：**
 
@@ -174,7 +208,7 @@ live pid=...        mode=disabled-for-local-testing
 - **模型拒绕过**：旧会话里已经吃过 `site_status` 错误时，模型可能按「禁止 workaround」拒绝继续。换新 thread。
 - **Computer Use**：Chrome 停在被拦 URL 上时，Computer Use 仍可能整段停掉。本工具只管 Browser Use / Chrome plugin。
 - **更新覆盖**：插件缓存目录名随版本变。`--persist` 就是为这个准备的。
-- 目前只支持 macOS（LaunchAgent）。需要 Windows 请开 issue。
+- 已支持 macOS（LaunchAgent）与 Windows（计划任务 Scheduled Task）。
 
 ---
 
