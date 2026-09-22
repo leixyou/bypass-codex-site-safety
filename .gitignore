@@ -7,3 +7,6 @@ venv/
 *.egg-info/
 dist/
 build/
+
+# local pre-deploy snapshots of this machine's Codex config
+_pre_deploy_backup/
