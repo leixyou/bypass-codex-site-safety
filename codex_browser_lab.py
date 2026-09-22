@@ -36,11 +36,19 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 MODE = "disabled-for-local-testing"
 LABEL = "com.codex-browser-lab.repair"
+# Windows: Codex regenerates the whole [mcp_servers.node_repl] block (command,
+# env_vars and env) plus the plugin .mcp.json on every launch, and builds
+# node_repl's environment itself, so neither a config edit nor an inherited
+# machine environment variable survives. The working hook is therefore to
+# re-apply the patch *after* each launch: an HKCU Run watcher plus a periodic
+# Scheduled Task. Any node_repl started afterwards (new Codex thread) is covered.
+WIN_WATCH = "CodexBrowserLabWatch"
 WIN_TASK = "CodexBrowserLabRepair"
 WIN_TASK_LOGON = "CodexBrowserLabRepairLogon"
 DEFAULT_WIN_INTERVAL_MIN = 5
@@ -574,6 +582,152 @@ def unpersist_macos(*, quiet: bool) -> None:
 
 
 # --------------------------------------------------------------------------
+# Windows: autostart watcher (HKCU\...\Run) and the watcher loop
+# --------------------------------------------------------------------------
+WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def get_win_run(name: str) -> str | None:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WIN_RUN_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, name)
+            return value
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def set_win_run(name: str, command: str) -> None:
+    import winreg
+
+    with winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER, WIN_RUN_KEY, 0, winreg.KEY_SET_VALUE
+    ) as key:
+        winreg.SetValueEx(key, name, 0, winreg.REG_SZ, command)
+
+
+def delete_win_run(name: str) -> bool:
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, WIN_RUN_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.DeleteValue(key, name)
+    except (FileNotFoundError, OSError):
+        return False
+    return True
+
+
+def win_watch_command() -> str:
+    return f'"{_python_for_task()}" "{installed_script()}" watch'
+
+
+def start_watcher(*, quiet: bool) -> None:
+    """(Re)start the watcher detached, so the current session is covered too."""
+    import subprocess as _sp
+
+    if get_win_run(WIN_WATCH) is None:
+        return
+    # Kill a previous instance so the watcher never multiplies.
+    _sp.run(
+        [
+            "powershell", "-NoProfile", "-Command",
+            "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+            "Where-Object { $_.CommandLine -like '*codex-browser-lab.py*watch*' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    creation = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED | NEW_GROUP | NO_WINDOW
+    _sp.Popen(
+        [_python_for_task(), str(installed_script()), "watch"],
+        creationflags=creation,
+        close_fds=True,
+    )
+    log("watcher: running", quiet=quiet)
+
+
+def stop_watcher(*, quiet: bool) -> None:
+    import subprocess as _sp
+
+    _sp.run(
+        [
+            "powershell", "-NoProfile", "-Command",
+            "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+            "Where-Object { $_.CommandLine -like '*codex-browser-lab.py*watch*' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    log("watcher: stopped", quiet=quiet)
+
+
+def watcher_running() -> bool:
+    import subprocess as _sp
+
+    r = _sp.run(
+        [
+            "powershell", "-NoProfile", "-Command",
+            "(Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+            "Where-Object { $_.CommandLine -like '*codex-browser-lab.py*watch*' } | "
+            "Measure-Object).Count",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int((r.stdout or "0").strip()) > 0
+    except ValueError:
+        return False
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Re-apply the patch whenever Codex rewrites its managed config block."""
+    interval = max(1, args.interval or 2)
+    _append_log(f"watch: started (interval {interval}s)")
+    while True:
+        try:
+            needs = False
+            cfg = config_toml()
+            if cfg.exists():
+                if (
+                    get_key(read_text(cfg), "mcp_servers.node_repl.env", "BROWSER_USE_SECURITY_MODE")
+                    != MODE
+                ):
+                    needs = True
+            root = plugin_cache() / "unified-computer-use"
+            if root.exists():
+                for mcp in root.glob("*/.mcp.json"):
+                    try:
+                        data = json.loads(read_text(mcp))
+                    except (OSError, ValueError):
+                        continue
+                    env = data.get("mcpServers", {}).get("cua_repl", {}).get("env")
+                    if isinstance(env, dict) and env.get("BROWSER_USE_SECURITY_MODE") != MODE:
+                        needs = True
+            if needs:
+                state = load_state()
+                cmd_install(
+                    argparse.Namespace(
+                        allow=state.get("domains") or [],
+                        preset=None,
+                        persist=False,
+                        dry_run=False,
+                        quiet=True,
+                        interval=state.get("interval_min"),
+                    )
+                )
+                _append_log("watch: Codex rewrote its config; patch re-applied")
+        except Exception as exc:  # noqa: BLE001 - a watcher must never die
+            _append_log(f"watch error: {exc!r}")
+        time.sleep(interval)
+
+
+# --------------------------------------------------------------------------
 # persistence: Windows Scheduled Task
 # --------------------------------------------------------------------------
 def _python_for_task() -> str:
@@ -611,6 +765,14 @@ def persist_windows(*, quiet: bool, interval: int = DEFAULT_WIN_INTERVAL_MIN) ->
         interval = 1
     install_self(quiet=quiet)
     shim = write_repair_cmd(quiet=quiet)
+    # The watcher reacts to a Codex launch within seconds; the Scheduled Task is
+    # the slower safety net that also covers a logged-off session.
+    set_win_run(WIN_WATCH, win_watch_command())
+    log(f"autostart: HKCU\\...\\Run\\{WIN_WATCH}", quiet=quiet)
+    try:
+        start_watcher(quiet=quiet)
+    except OSError as exc:
+        log(f"warn: could not start the watcher now - {exc}", quiet=quiet, important=True)
     tr = f'"{shim}"'
     created: list[str] = []
     errors: list[str] = []
@@ -646,6 +808,9 @@ def persist_windows(*, quiet: bool, interval: int = DEFAULT_WIN_INTERVAL_MIN) ->
 
 
 def unpersist_windows(*, quiet: bool) -> None:
+    stop_watcher(quiet=quiet)
+    if delete_win_run(WIN_WATCH):
+        log(f"removed autostart: {WIN_WATCH}", quiet=quiet)
     removed = False
     for name in (WIN_TASK, WIN_TASK_LOGON):
         r = _schtasks("/Delete", "/TN", name, "/F")
@@ -990,6 +1155,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"CODEX_HOME          {codex_home()}")
     if IS_WIN:
         print(f"official node_repl  {official_node_repl()}")
+        print(f"watcher             running={watcher_running()} autostart={get_win_run(WIN_WATCH) is not None}")
         print(f"persist             {persist_status()}")
         print(f"repair shim         {win_repair_cmd()} exists={win_repair_cmd().exists()}")
     else:
@@ -998,7 +1164,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"LaunchAgent         {launch_agent_path()} exists={launch_agent_path().exists()}")
 
     cfg = config_toml()
-    ok = False
+    config_ok = False
     if cfg.exists():
         text = read_text(cfg)
         cmd = get_key(text, "mcp_servers.node_repl", "command")
@@ -1011,10 +1177,12 @@ def cmd_status(args: argparse.Namespace) -> int:
             cmd_ok = official is not None and cmd is not None and Path(cmd) == official
         else:
             cmd_ok = cmd == str(wrapper_path())
-        ok = cmd_ok and mode == MODE
-        print(f"config ok           {ok}")
+        config_ok = cmd_ok and mode == MODE
+        print(f"config ok           {config_ok}")
     else:
         print("config.toml         missing")
+
+    ok = config_ok
 
     rows = live_node_repl()
     if not rows:
@@ -1022,6 +1190,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     for pid, mode in rows:
         print(f"live pid={pid:<10} mode={mode}")
     if not ok:
+        if IS_WIN:
+            print("note: Codex rewrites its [mcp_servers.node_repl] block on every launch;")
+            print("      the watcher / repair task re-applies the patch within seconds.")
         return 2
     if rows and all(m != MODE for _, m in rows):
         print("note: live processes still have the old env; start a new Codex thread.")
@@ -1072,6 +1243,14 @@ def build_parser() -> argparse.ArgumentParser:
     rp = sub.add_parser("repair", help="re-apply last install (used by the watcher)")
     add_common(rp)
     rp.set_defaults(func=cmd_repair)
+
+    wt = sub.add_parser(
+        "watch",
+        help="Windows: stay resident and re-apply the patch after Codex rewrites its config",
+    )
+    add_common(wt)
+    wt.add_argument("--interval", type=int, metavar="SEC", help="poll period (default 2)")
+    wt.set_defaults(func=cmd_watch)
 
     return p
 

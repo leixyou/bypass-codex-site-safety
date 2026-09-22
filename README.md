@@ -103,9 +103,11 @@ Then **restart Codex / ChatGPT Desktop** (or start a new Codex thread).
 Already-running `node_repl.exe` processes keep the old environment.
 
 On Windows there is no wrapper: the flag goes into the
-`[mcp_servers.node_repl.env]` table that Codex already passes to `node_repl.exe`,
-and `command` keeps pointing at the official binary. `--persist` registers two
-per-user Scheduled Tasks instead of a LaunchAgent. Full details:
+`[mcp_servers.node_repl.env]` table and `command` keeps pointing at the official
+binary. Note that Codex regenerates that whole block on **every launch**, and it
+builds `node_repl`'s environment itself (so a `setx` variable never reaches it) —
+`--persist` therefore installs a small watcher that re-applies the patch within
+about two seconds, after which a **new Codex thread** picks it up. Full details:
 [README.windows.md](README.windows.md).
 
 ---
@@ -153,7 +155,7 @@ python3 codex_browser_lab.py uninstall
 | Platform | Mechanism |
 |---|---|
 | macOS | `~/Library/LaunchAgents/com.codex-browser-lab.repair.plist` |
-| Windows | `CodexBrowserLabRepair` (every 5 minutes; `--interval MIN`) plus `CodexBrowserLabRepairLogon`, both running `~/.codex/mcp-wrappers/codex-browser-lab-repair.cmd` |
+| Windows | an HKCU `Run` watcher that re-applies the patch within ~2 s, plus the `CodexBrowserLabRepair` Scheduled Task (every 5 min; `--interval MIN`) as a safety net |
 
 It watches `~/.codex/config.toml` and the plugin cache. After a ChatGPT update reverts the change, `repair` runs again.
 
@@ -172,7 +174,9 @@ It watches `~/.codex/config.toml` and the plugin cache. After a ChatGPT update r
 The wrapper uses `exec`, so the running image is still official `node_repl` and the native-pipe code-signing identity does not change.
 
 On **Windows** no wrapper is created at all: only rows 2–5 apply, and `command` keeps
-pointing at the official `node_repl.exe`. See [README.windows.md](README.windows.md).
+pointing at the official `node_repl.exe`. Because Codex rewrites its `node_repl` block
+on every launch, the patch is re-applied by a watcher rather than by a wrapper — see
+[README.windows.md](README.windows.md).
 
 It does **not**:
 

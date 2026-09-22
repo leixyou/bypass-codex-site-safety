@@ -1,7 +1,7 @@
 # Windows guide — bypass-codex-site-safety
 
-This is the Windows port of [bypass-codex-site-safety](README.md). It turns on
-Codex / ChatGPT Desktop **Browser Use local-testing mode** on a Windows machine,
+Windows port of [bypass-codex-site-safety](README.md). It turns on Codex / ChatGPT
+Desktop **Browser Use local-testing mode** (`BROWSER_USE_SECURITY_MODE=disabled-for-local-testing`),
 so the cloud `aura/site_status` ("site-safety policy") check is skipped for every
 `http://` / `https://` site.
 
@@ -10,16 +10,8 @@ so the cloud `aura/site_status` ("site-safety policy") check is skipped for ever
 | Component | Needed |
 |---|---|
 | Windows | 10 or 11 (x64) |
-| Codex / ChatGPT Desktop | installed and run at least once (so `%USERPROFILE%\.codex\config.toml` exists) |
+| Codex / ChatGPT Desktop | installed and run once, so `%USERPROFILE%\.codex\config.toml` exists |
 | Python | 3.9+ (`python`, `python3` or the `py` launcher on PATH) |
-
-Check the prerequisites:
-
-```powershell
-node_repl_path = "$env:LOCALAPPDATA\OpenAI\Codex\runtimes\cua_node"
-Get-ChildItem $node_repl_path -Recurse -Filter node_repl.exe | Select-Object FullName
-Test-Path "$env:USERPROFILE\.codex\config.toml"
-```
 
 ## Install
 
@@ -35,22 +27,56 @@ With no arguments that is exactly:
 python codex_browser_lab.py install --preset shopping-cn --persist
 ```
 
-Then **restart Codex / ChatGPT Desktop** (or at least start a new Codex thread).
-Already-running `node_repl.exe` processes keep the old environment.
+Then **start a new Codex thread** (see below for why).
 
-## How the Windows port differs from macOS
+## The Windows-specific obstacle
+
+Codex desktop on Windows behaves differently from macOS in two ways that decide
+the whole design. Both were verified on build `26.915.4065.0`
+(plugin `26.915.31945`):
+
+**1. Codex regenerates its managed config block on every launch.**
+`[mcp_servers.node_repl]` (`args`, `command`, `env_vars`, `startup_timeout_sec`),
+its `[mcp_servers.node_repl.env]` table and the plugin's `.mcp.json` are rewritten
+from Codex's own template. Any key added there — including in `env_vars` — is
+removed the next time the app starts. Tables Codex does not own, such as
+`[browser_use.origins.*]`, are left alone.
+
+**2. Codex builds `node_repl`'s environment itself; it does not inherit it.**
+The variable propagates `explorer.exe → ChatGPT.exe → codex.exe`, but the
+`node_repl.exe` children are spawned with a synthesised environment: the standard
+system variables plus the `env` table plus the `env_vars` allowlist. Setting
+`BROWSER_USE_SECURITY_MODE` as a Windows user environment variable (`setx`,
+`HKCU\Environment`) therefore has **no effect** — it never reaches `node_repl`.
+
+So the only working channel is `[mcp_servers.node_repl.env]`, re-applied *after*
+each Codex launch. That is what `--persist` does on Windows:
+
+| Mechanism | Trigger | Purpose |
+|---|---|---|
+| **Watcher** (`watch`) | HKCU `...\Run` autostart; polls every 2 s | re-applies the patch within ~2 s of Codex rewriting it |
+| **Scheduled Task** `CodexBrowserLabRepair` | every 5 min (`--interval MIN`) | safety net when the watcher is not running |
+
+Codex spawns `node_repl` lazily, per session — it is not tied to app start. So the
+sequence is:
+
+1. Codex starts and wipes the patch.
+2. The watcher re-applies it within ~2 seconds.
+3. You open a **new Codex thread** → its `node_repl` is spawned while reading the
+   re-patched config, and carries the flag.
+
+`node_repl` processes warmed up at app start, before the watcher ran, keep the old
+environment — that is exactly what `status` reports as `mode=<unset>`.
+
+## macOS vs Windows
 
 | | macOS | Windows |
 |---|---|---|
-| Injection point | bash wrapper that `export`s the flag, then `exec`s the signed `node_repl` — `command` in `config.toml` is repointed at it | the existing `[mcp_servers.node_repl.env]` table — **`command` is left untouched** |
-| Wrapper file | `~/.codex/mcp-wrappers/node-repl-security-mode.sh` | none (nothing to wrap) |
-| Persistence | LaunchAgent with `WatchPaths` | two Scheduled Tasks + a tiny `.cmd` shim |
-| `node_repl` discovery | `/Applications/{ChatGPT,Codex}.app/...` | `%LOCALAPPDATA%\OpenAI\Codex\runtimes\cua_node\*\bin\node_repl.exe` (newest), or the `command` already in `config.toml` |
-| Live check | `pgrep` + `ps eww` | `tasklist` + reading each process's PEB environment block via `ReadProcessMemory` |
-
-The Windows path needs no wrapper at all: Codex already ships a
-`[mcp_servers.node_repl.env]` table that it passes straight to `node_repl.exe`,
-so the variable is set there and the official signed binary stays in place.
+| Injection point | bash wrapper `exec`ing the signed `node_repl`; `command` is repointed | `[mcp_servers.node_repl.env]` only — `command` stays the official binary |
+| Wrapper file | `~/.codex/mcp-wrappers/node-repl-security-mode.sh` | none |
+| Persistence | LaunchAgent with `WatchPaths` | HKCU `Run` watcher + Scheduled Task |
+| `node_repl` discovery | `/Applications/{ChatGPT,Codex}.app/...` | `%LOCALAPPDATA%\OpenAI\Codex\runtimes\cua_node\*\bin\node_repl.exe`, else the `command` already in `config.toml` |
+| Live check | `pgrep` + `ps eww` | toolhelp32 + reading each process's PEB environment block (`ReadProcessMemory`) |
 
 ## Commands
 
@@ -64,30 +90,17 @@ so the variable is set there and the official signed binary stays in place.
 # extra local allowlist entries (optional)
 .\install.ps1 install --persist --preset shopping-cn --allow pixiv.net
 
+# slower safety net (minutes)
+.\install.ps1 install --persist --interval 15
+
 # preview, no writes
 .\install.ps1 install --preset shopping-cn --dry-run
 
+# run the watcher in the foreground (debugging)
+.\install.ps1 watch --interval 2
+
 # uninstall (keeps origin allowlists)
 .\install.ps1 uninstall
-```
-
-`--persist` registers two per-user Scheduled Tasks:
-
-| Task | Trigger | Purpose |
-|---|---|---|
-| `CodexBrowserLabRepair` | every 5 minutes (`--interval MIN` to change) | re-applies the patch after a Codex/ChatGPT update rewrites `config.toml` |
-| `CodexBrowserLabRepairLogon` | at logon | immediate re-apply after a reboot |
-
-Both run `~/.codex/mcp-wrappers/codex-browser-lab-repair.cmd`, which calls the
-installed copy of the tool with `repair` and appends output to
-`~/.codex/mcp-wrappers/codex-browser-lab.log`.
-
-Inspect or remove them by hand if you prefer:
-
-```powershell
-schtasks /Query /TN CodexBrowserLabRepair /V /FO LIST
-schtasks /Delete /TN CodexBrowserLabRepair /F
-schtasks /Delete /TN CodexBrowserLabRepairLogon /F
 ```
 
 ## Files it changes on Windows
@@ -98,10 +111,13 @@ schtasks /Delete /TN CodexBrowserLabRepairLogon /F
 | `~/.codex/config.toml` `[browser_use.origins.*]` | optional origin allow tables (`--preset` / `--allow`) |
 | `~/.codex/browser/config.toml` | optional `allowed` arrays |
 | `~/.codex/plugins/cache/openai-bundled/unified-computer-use/*/.mcp.json` | CUA env flag |
-| `~/.codex/mcp-wrappers/` | installed tool copy, `repair` shim, log, `backups/` of every file touched |
+| `~/.codex/mcp-wrappers/` | installed tool copy, `repair` shim, watcher log, `backups/` of every file touched |
+| `HKCU\...\CurrentVersion\Run\CodexBrowserLabWatch` | autostarts the watcher |
+| Scheduled Task `CodexBrowserLabRepair` | periodic repair |
 
-`~/.codex/mcp-wrappers/backups/` keeps a timestamped copy of each file before it
-is written, and uninstall restores the official values.
+`backups/` keeps a timestamped copy of each file before it is written; names are
+derived from the path relative to `CODEX_HOME`, so `config.toml` and
+`browser/config.toml` never overwrite each other's backup.
 
 ## Verify
 
@@ -109,27 +125,32 @@ is written, and uninstall restores the official values.
 .\install.ps1 status
 ```
 
-You want:
+Healthy output:
 
 ```text
 platform            win32
 CODEX_HOME          C:\Users\<you>\.codex
 official node_repl  ...\runtimes\cua_node\<hash>\bin\node_repl.exe
-persist             CodexBrowserLabRepair=installed CodexBrowserLabRepairLogon=installed
+watcher             running=True autostart=True
+persist             CodexBrowserLabRepair=installed CodexBrowserLabRepairLogon=absent
 repair shim         ...\mcp-wrappers\codex-browser-lab-repair.cmd exists=True
 config command      ...\runtimes\cua_node\<hash>\bin\node_repl.exe
 config security     disabled-for-local-testing
 config ok           True
-live pid=1234       mode=disabled-for-local-testing
+live pid=1234       mode=disabled-for-local-testing      <- after opening a NEW thread
 ```
 
 Exit codes: `0` active, `2` config not patched, `3` config patched but the running
-processes still carry the old environment (restart the app).
+processes still carry the old environment (start a new Codex thread).
 
-`mode=<unreadable>` for a live PID means Windows refused the `ReadProcessMemory`
-call for that process — on a normal same-user install this does not happen; it
-just means the live check could not confirm that PID. The config check is
-authoritative either way.
+Watch the watcher work:
+
+```powershell
+Get-Content ~\.codex\mcp-wrappers\codex-browser-lab.log -Tail 20
+```
+
+`mode=<unreadable>` for a live PID means `ReadProcessMemory` was refused for that
+process; the config check is authoritative regardless.
 
 ## Uninstall
 
@@ -137,18 +158,24 @@ authoritative either way.
 .\install.ps1 uninstall
 ```
 
-Removes both Scheduled Tasks, the `.cmd` shim, the `BROWSER_USE_SECURITY_MODE`
-key from `config.toml` and the CUA `.mcp.json`. Origin allowlists are left in
-place unless you delete them from `config.toml` yourself.
+Stops the watcher, removes the HKCU autostart value, deletes `CodexBrowserLabRepair`
+and the `.cmd` shim, and strips `BROWSER_USE_SECURITY_MODE` from `config.toml` and
+the CUA `.mcp.json`. Origin allowlists are left in place unless you delete them
+from `config.toml` yourself.
 
 ## Limits
 
+- **New thread required:** the patch only reaches `node_repl` processes spawned
+  after it was re-applied. Threads opened at app start keep the old environment.
 - **Model refusal:** if an old thread already saw a `site_status` error, the model
-  may refuse to continue. Use a new thread.
+  may refuse to continue ("no workarounds"). Use a new thread.
 - **Computer Use:** Chrome sitting on a blocked URL can still abort a Computer Use
   session. This tool only covers Browser Use / the Chrome plugin.
-- **Updates:** a Codex/ChatGPT update rewrites `config.toml`. That is what
-  `--persist` is for; without it, re-run `.\install.ps1`.
+- **Updates:** a Codex/ChatGPT update regenerates `config.toml`. The watcher covers
+  this as long as it is running; without `--persist`, re-run `.\install.ps1`.
+- **Logon Task is optional:** registering an `ONLOGON` Scheduled Task needs an
+  elevated shell. It is skipped with a warning when not elevated; the 5-minute task
+  already re-applies the patch shortly after a reboot.
 - **Side effects:** `disabled-for-local-testing` bypasses more than
   `check-url-site-status` — it also removes user-consent prompts for
   `browser-history-read`, `browser-origin-access`, `check-navigation-url-policy`,

@@ -102,9 +102,10 @@ python codex_browser_lab.py install --preset shopping-cn --persist
 然后 **重启 Codex / ChatGPT Desktop**（或新开一条 Codex thread）。已经在跑的
 `node_repl.exe` 不会继承新环境变量。
 
-Windows 上不需要 wrapper：开关直接写进 Codex 本来就会传给 `node_repl.exe` 的
-`[mcp_servers.node_repl.env]` 表，`command` 仍指向官方二进制。`--persist` 装的是
-两个计划任务（Scheduled Task），不是 LaunchAgent。详见
+Windows 上不需要 wrapper：开关直接写进 `[mcp_servers.node_repl.env]` 表，`command` 仍指向
+官方二进制。注意 Codex **每次启动都会重写整个 `node_repl` 块**，而且 `node_repl` 的环境由
+Codex 自己拼装（所以 `setx` 的系统变量传不进去）——`--persist` 因此装了一个小守护进程，
+在约两秒内把补丁补回去，之后 **新开一条 Codex thread** 即可生效。详见
 [README.windows.md](README.windows.md)。
 
 ---
@@ -152,7 +153,7 @@ python3 codex_browser_lab.py uninstall
 | 平台 | 机制 |
 |---|---|
 | macOS | `~/Library/LaunchAgents/com.codex-browser-lab.repair.plist` |
-| Windows | `CodexBrowserLabRepair`（每 5 分钟，可用 `--interval MIN` 调整）加 `CodexBrowserLabRepairLogon`，都执行 `~/.codex/mcp-wrappers/codex-browser-lab-repair.cmd` |
+| Windows | HKCU `Run` 守护进程，约 2 秒内自动补回补丁；另加 `CodexBrowserLabRepair` 计划任务（每 5 分钟，`--interval MIN` 可调）兜底 |
 
 监控 `~/.codex/config.toml` 和插件缓存；ChatGPT 更新改回去之后自动 `repair`。
 
