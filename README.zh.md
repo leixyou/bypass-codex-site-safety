@@ -30,9 +30,9 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 
 | 组件 | 版本 |
 |---|---|
-| ChatGPT.app | **26.915.31945**（CFBundleVersion 9922） |
-| Browser / Chrome 插件（`openai-bundled`） | **26.915.31945** |
-| `BROWSER_USE_CODEX_APP_VERSION` | **26.915.31945** |
+| ChatGPT.app | **26.917.62051** |
+| Browser / Chrome 插件（`openai-bundled`） | **26.917.62051** |
+| `BROWSER_USE_CODEX_APP_VERSION` | **26.917.62051** |
 
 该版本的 `browser-service.mjs` 仍会把 `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` 映射为跳过 `check-url-site-status`。ChatGPT 更新常会升这个版本并改写 `node_repl`；再跑 `./install.sh status`，或依赖 `--persist`。
 
@@ -52,6 +52,20 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 | 旧会话里模型看到 `site_status` 后拒绕过 | **新开** Codex thread |
 
 `localhost` / `127.0.0.1` 本来就不做 `site_status`。
+
+### 微信小程序后台点某个功能仍被拦
+
+能打开后台，但一点具体功能就报「浏览器安全策略禁止操作当前网址」——这经常 **不是** `site_status`。点击后 Chrome CDP 会发 `Page.navigationBlocked`，插件再抛 `browser_navigation_blocked`，文案同样是 “not permitted”。local-testing 原先不跳过这条。
+
+`./install.sh` 现在会顺手改缓存里的 `browser-service.mjs`，在开关打开时忽略该事件。然后 **新开 thread**。
+
+仍然不管：
+
+- **Computer Use 操作 Chrome**，且前台是 `mp.weixin.qq.com` 等被拦域名——另一套杀会话，不是 Browser Use。
+- 微信后台检测到 Chrome debugger，自己弹出安全验证页。
+- 模型确认策略（发布 / 支付 / 改权限）。需要你在对话里明确授权该操作。
+
+用 `@Chrome` / Browser Use 认领你已经登录的标签，不要用 Computer Use 去点那个标签。
 
 ---
 
@@ -137,6 +151,7 @@ python3 codex_browser_lab.py uninstall
 | `~/.codex/config.toml` `[browser_use.origins.*]` | 可选 origin 放行表 |
 | `~/.codex/browser/config.toml` | 可选 `allowed` 数组 |
 | `~/.codex/plugins/cache/openai-bundled/unified-computer-use/*/.mcp.json` | CUA 环境变量 + `CUA_REPL_NODE_REPL_PATH` |
+| `~/.codex/plugins/cache/.../{chrome,browser}/*/scripts/browser-service.mjs` | local-testing 开启时忽略 CDP `Page.navigationBlocked` |
 
 wrapper 用 `exec`，运行中的进程镜像仍是官方 `node_repl`，native pipe 的代码签名身份不变。
 

@@ -355,6 +355,50 @@ def patch_cua_mcp(*, dry: bool, quiet: bool) -> int:
     return changed
 
 
+NAV_BLOCK_RE = re.compile(
+    r"(function \w+\(\w+\)\{if\(\w+==null\|\|!\w+\(\w+\)\)return;)"
+    r"(let \w+=\w+\(\w+\.params\.url\)\?\?\"this page\";"
+    r"throw new \w+\(\"browser_navigation_blocked\","
+    r"`Browser Use is not permitted on \$\{\w+\}\.`\)\})"
+)
+NAV_BLOCK_GUARD = (
+    'if((typeof process<"u"?process.env.BROWSER_USE_SECURITY_MODE:"")'
+    '==="disabled-for-local-testing")return;'
+)
+
+
+def patch_navigation_blocked(*, dry: bool, quiet: bool) -> int:
+    """Ignore Chrome Page.navigationBlocked under local-testing mode.
+
+    site_status is skipped by the env flag, but in-page actions can still
+    throw browser_navigation_blocked ("not permitted on <url>") when CDP
+    emits Page.navigationBlocked — common on mp.weixin.qq.com admin flows.
+    """
+    changed = 0
+    roots = [plugin_cache() / "chrome", plugin_cache() / "browser"]
+    files: list[Path] = []
+    for root in roots:
+        if root.exists():
+            files.extend(sorted(root.glob("*/scripts/browser-service.mjs")))
+    for path in files:
+        text = path.read_text(errors="replace")
+        if NAV_BLOCK_GUARD in text:
+            continue
+        new, n = NAV_BLOCK_RE.subn(r"\1" + NAV_BLOCK_GUARD + r"\2", text, count=1)
+        if n == 0:
+            log(f"no Page.navigationBlocked hook in {path} (skip)", quiet=quiet)
+            continue
+        if dry:
+            log(f"would patch navigationBlocked: {path}", quiet=quiet)
+            changed += 1
+            continue
+        backup(path)
+        path.write_text(new)
+        log(f"patched navigationBlocked: {path}", quiet=quiet, important=True)
+        changed += 1
+    return changed
+
+
 def save_state(domains: list[str], preset: str | None) -> None:
     wrappers_dir().mkdir(parents=True, exist_ok=True)
     state_path().write_text(
@@ -458,6 +502,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     patch_config(uniq, dry=args.dry_run, quiet=args.quiet)
     patch_browser_config(uniq, dry=args.dry_run, quiet=args.quiet)
     patch_cua_mcp(dry=args.dry_run, quiet=args.quiet)
+    patch_navigation_blocked(dry=args.dry_run, quiet=args.quiet)
     if not args.dry_run:
         save_state(uniq, args.preset)
         if args.persist:

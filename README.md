@@ -30,9 +30,9 @@ Verified locally against:
 
 | Component | Version |
 |---|---|
-| ChatGPT.app | **26.915.31945** (CFBundleVersion 9922) |
-| Browser / Chrome plugin (`openai-bundled`) | **26.915.31945** |
-| `BROWSER_USE_CODEX_APP_VERSION` | **26.915.31945** |
+| ChatGPT.app | **26.917.62051** |
+| Browser / Chrome plugin (`openai-bundled`) | **26.917.62051** |
+| `BROWSER_USE_CODEX_APP_VERSION` | **26.917.62051** |
 
 On this build, `browser-service.mjs` still maps `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` to skipping `check-url-site-status`. ChatGPT updates often bump this version and rewrite `node_repl`; re-run `./install.sh status` or rely on `--persist`.
 
@@ -52,6 +52,20 @@ On this build, `browser-service.mjs` still maps `BROWSER_USE_SECURITY_MODE=disab
 | Model refusing after an old `site_status` error | Use a **new** Codex thread |
 
 `localhost` / `127.0.0.1` were already exempt from `site_status`.
+
+### Still blocked on WeChat mini-program admin (or similar)
+
+If **open** works but **clicking a feature** fails with “browser security policy / not permitted on the current URL”, that is often **not** `site_status`. After a click, Chrome CDP can emit `Page.navigationBlocked`; the plugin then throws `browser_navigation_blocked` with the same “not permitted” wording. Local-testing mode did not skip that path.
+
+`./install.sh` now also patches cached `browser-service.mjs` so that event is ignored while the flag is on. Then start a **new** thread.
+
+Still not covered:
+
+- **Computer Use on Chrome** while `mp.weixin.qq.com` (or another blocked host) is the front tab — a separate session killer, not Browser Use.
+- WeChat admin detecting Chrome’s debugger and showing its own security page.
+- Model confirmation policy (publish / pay / change permissions). Say explicitly that you authorize that action.
+
+Prefer `@Chrome` / Browser Use on a tab you already logged in. Do not drive that tab with Computer Use.
 
 ---
 
@@ -137,6 +151,7 @@ It watches `~/.codex/config.toml` and the plugin cache. After a ChatGPT update r
 | `~/.codex/config.toml` `[browser_use.origins.*]` | Optional origin allow tables |
 | `~/.codex/browser/config.toml` | Optional `allowed` arrays |
 | `~/.codex/plugins/cache/openai-bundled/unified-computer-use/*/.mcp.json` | CUA env + `CUA_REPL_NODE_REPL_PATH` |
+| `~/.codex/plugins/cache/.../{chrome,browser}/*/scripts/browser-service.mjs` | Ignore CDP `Page.navigationBlocked` while local-testing mode is on |
 
 The wrapper uses `exec`, so the running image is still official `node_repl` and the native-pipe code-signing identity does not change.
 
