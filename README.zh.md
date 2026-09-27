@@ -1,6 +1,6 @@
 # bypass-codex-site-safety
 
-[English](README.md) · [中文](README.zh.md)
+[English](README.md) · [中文](README.zh.md) · [Windows 指南](README.windows.md)
 
 在本机绕过 Codex / ChatGPT Desktop 的 **Browser Use site-safety policy**。
 
@@ -20,9 +20,9 @@ Settings 里 Allow browsing、`~/.codex/browser/config.toml` 白名单都压不�
 BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 ```
 
-从而跳过 `check-url-site-status`。ChatGPT 一更新会把 `~/.codex/config.toml` 里的 `node_repl` 改回去，所以默认安装带 macOS LaunchAgent，更新后再自动补上。
+从而跳过 `check-url-site-status`。ChatGPT 一更新会把 `~/.codex/config.toml` 改回去，所以默认安装带自动回补（macOS LaunchAgent；Windows 上是 HKCU Run 守护进程 + 计划任务）。
 
-与 OpenAI 无关。不 MITM `chatgpt.com`，也不改 `browser-service.mjs`。
+与 OpenAI 无关。不 MITM `chatgpt.com`。会改本地插件缓存，让 local-testing 开启时忽略 `Page.navigationBlocked`；应用更新会覆盖该文件，`--persist` 会再打回去。
 
 ## 实测版本
 
@@ -35,6 +35,8 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 | `BROWSER_USE_CODEX_APP_VERSION` | **26.917.62051** |
 
 该版本的 `browser-service.mjs` 仍会把 `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` 映射为跳过 `check-url-site-status`。ChatGPT 更新常会升这个版本并改写 `node_repl`；再跑 `./install.sh status`，或依赖 `--persist`。
+
+Windows（Codex Desktop **26.915.4065.0** / 插件 **26.915.31945**）见 [README.windows.md](README.windows.md)。
 
 ---
 
@@ -71,7 +73,7 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 
 ## 一键安装（macOS）
 
-需要：macOS、已安装 ChatGPT.app 或 Codex.app（实测 **26.915.31945**）、Python 3.9+。
+需要：macOS、已安装 ChatGPT.app 或 Codex.app（实测 **26.917.62051**）、Python 3.9+。
 
 ```bash
 git clone https://github.com/leixyou/bypass-codex-site-safety.git
@@ -93,6 +95,34 @@ python3 codex_browser_lab.py install --preset shopping-cn --persist
 `taobao.com` · `tmall.com` · `1688.com` · `alicdn.com` · `alipay.com`（主域 + 子域）
 
 这只是方便项。真正全局跳过 site-safety 的是 security mode。
+
+---
+
+## 一键安装（Windows）
+
+需要：Windows 10/11、已安装 Codex / ChatGPT Desktop（先运行一次，让
+`%USERPROFILE%\.codex\config.toml` 生成）、Python 3.9+。
+
+```powershell
+git clone https://github.com/leixyou/bypass-codex-site-safety.git
+cd bypass-codex-site-safety
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+无参数时等于：
+
+```powershell
+python codex_browser_lab.py install --preset shopping-cn --persist
+```
+
+然后 **重启 Codex / ChatGPT Desktop**（或新开一条 Codex thread）。已经在跑的
+`node_repl.exe` 不会继承新环境变量。
+
+Windows 上不需要 wrapper：开关直接写进 `[mcp_servers.node_repl.env]` 表，`command` 仍指向
+官方二进制。注意 Codex **每次启动都会重写整个 `node_repl` 块**，而且 `node_repl` 的环境由
+Codex 自己拼装（所以 `setx` 的系统变量传不进去）——`--persist` 因此装了一个小守护进程，
+在约两秒内把补丁补回去，之后 **新开一条 Codex thread** 即可生效。详见
+[README.windows.md](README.windows.md)。
 
 ---
 
@@ -134,9 +164,12 @@ python3 codex_browser_lab.py install --preset shopping-cn --dry-run
 python3 codex_browser_lab.py uninstall
 ```
 
-`--persist` 会安装：
+`--persist` 会安装一个自动回补的守护：
 
-`~/Library/LaunchAgents/com.codex-browser-lab.repair.plist`
+| 平台 | 机制 |
+|---|---|
+| macOS | `~/Library/LaunchAgents/com.codex-browser-lab.repair.plist` |
+| Windows | HKCU `Run` 守护进程，约 2 秒内自动补回补丁；另加 `CodexBrowserLabRepair` 计划任务（每 5 分钟，`--interval MIN` 可调）兜底 |
 
 监控 `~/.codex/config.toml` 和插件缓存；ChatGPT 更新改回去之后自动 `repair`。
 
@@ -155,10 +188,14 @@ python3 codex_browser_lab.py uninstall
 
 wrapper 用 `exec`，运行中的进程镜像仍是官方 `node_repl`，native pipe 的代码签名身份不变。
 
+**Windows** 上不生成 wrapper：`command` 保持指向官方 `node_repl.exe`，开关写进
+`[mcp_servers.node_repl.env]`，`Page.navigationBlocked` 的缓存补丁仍然会打。Codex
+每次启动都会重写 `node_repl` 块，所以靠守护进程回补。见 [README.windows.md](README.windows.md)。
+
 **不会做的事：**
 
 - 不劫持 `chatgpt.com/backend-api/aura/site_status`
-- 不改 `browser-service.mjs`（升级即失效）
+- 不改应用包本身（只动本地插件缓存，更新后由 `--persist` 再打）
 - 不动 Computer Use 那套「当前 Chrome URL 不允许」的独立杀会话逻辑
 
 ---
@@ -180,7 +217,7 @@ live pid=...        mode=disabled-for-local-testing
 
 `config ok true` 但 live process 仍是 `<unset>`：配置已写上，当前会话还是旧进程。新开 thread。
 
-更新 ChatGPT 后再跑一次 `status`。若 `config ok false` 且装了 `--persist`，等几秒让 LaunchAgent 回补；没有 persist 就再执行 `./install.sh`。
+更新 ChatGPT 后再跑一次 `status`。若 `config ok false` 且装了 `--persist`，等几秒让守护回补；没有 persist 就再执行 `./install.sh` 或 `.\install.ps1`。
 
 ---
 
@@ -189,7 +226,7 @@ live pid=...        mode=disabled-for-local-testing
 - **模型拒绕过**：旧会话里已经吃过 `site_status` 错误时，模型可能按「禁止 workaround」拒绝继续。换新 thread。
 - **Computer Use**：Chrome 停在被拦 URL 上时，Computer Use 仍可能整段停掉。本工具只管 Browser Use / Chrome plugin。
 - **更新覆盖**：插件缓存目录名随版本变。`--persist` 就是为这个准备的。
-- 目前只支持 macOS（LaunchAgent）。需要 Windows 请开 issue。
+- 已支持 macOS（LaunchAgent）与 Windows（HKCU Run 守护进程 + 计划任务）。
 
 ---
 
@@ -199,7 +236,7 @@ live pid=...        mode=disabled-for-local-testing
 python3 codex_browser_lab.py uninstall
 ```
 
-恢复官方 `node_repl` 路径、删掉 env 开关和 LaunchAgent。origin 白名单默认保留，要删自己改 `config.toml`。
+恢复官方 `node_repl` 路径、删掉 env 开关，以及 LaunchAgent / Windows 守护。origin 白名单默认保留，要删自己改 `config.toml`。
 
 ## License
 
