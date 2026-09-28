@@ -1,6 +1,6 @@
 # bypass-codex-site-safety
 
-[English](README.md) · [中文](README.zh.md) · [Windows guide](README.windows.md)
+[English](README.md) · [中文](README.zh.md) · [Windows guide](README.windows.md) · [Computer Use](README.computer-use.md)
 
 Bypass Codex / ChatGPT Desktop **Browser Use site-safety policy** on your own machine.
 
@@ -30,13 +30,14 @@ Verified locally against:
 
 | Component | Version |
 |---|---|
-| ChatGPT.app | **26.917.62051** |
-| Browser / Chrome plugin (`openai-bundled`) | **26.917.62051** |
-| `BROWSER_USE_CODEX_APP_VERSION` | **26.917.62051** |
+| ChatGPT.app | **26.924.22138** |
+| Browser / Chrome plugin (`openai-bundled`) | **26.924.22138** |
+| `BROWSER_USE_CODEX_APP_VERSION` | **26.924.22138** |
+| Codex Computer Use.app | **26.923.1001242** |
 
 On this build, `browser-service.mjs` still maps `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` to skipping `check-url-site-status`. ChatGPT updates often bump this version and rewrite `node_repl`; re-run `./install.sh status` or rely on `--persist`.
 
-Windows (Codex Desktop **26.915.4065.0** / plugin **26.915.31945**) is documented in [README.windows.md](README.windows.md).
+Windows (Codex Desktop **26.915.4065.0** / plugin **26.915.31945**) is documented in [README.windows.md](README.windows.md). Native Computer Use URL policy is a separate helper; see [README.computer-use.md](README.computer-use.md).
 
 ---
 
@@ -68,6 +69,22 @@ Still not covered:
 - Model confirmation policy (publish / pay / change permissions). Say explicitly that you authorize that action.
 
 Prefer `@Chrome` / Browser Use on a tab you already logged in. Do not drive that tab with Computer Use.
+
+---
+
+## One-shot install (macOS Computer Use)
+
+Native Computer Use kills the session with `blockedURL` (`-10015`) when Chrome
+is on a blocked URL. That path is **not** `BROWSER_USE_SECURITY_MODE`.
+
+```bash
+chmod +x install-computer-use.sh
+./install-computer-use.sh
+```
+
+Patches `~/.codex/computer-use/Codex Computer Use.app` and a JS overlay. Restart
+ChatGPT.app, then start a new Computer Use turn. Details:
+[README.computer-use.md](README.computer-use.md).
 
 ---
 

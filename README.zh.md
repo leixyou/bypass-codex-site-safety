@@ -1,6 +1,6 @@
 # bypass-codex-site-safety
 
-[English](README.md) · [中文](README.zh.md) · [Windows 指南](README.windows.md)
+[English](README.md) · [中文](README.zh.md) · [Windows 指南](README.windows.md) · [Computer Use](README.computer-use.md)
 
 在本机绕过 Codex / ChatGPT Desktop 的 **Browser Use site-safety policy**。
 
@@ -30,9 +30,10 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 
 | 组件 | 版本 |
 |---|---|
-| ChatGPT.app | **26.917.62051** |
-| Browser / Chrome 插件（`openai-bundled`） | **26.917.62051** |
-| `BROWSER_USE_CODEX_APP_VERSION` | **26.917.62051** |
+| ChatGPT.app | **26.924.22138** |
+| Browser / Chrome 插件（`openai-bundled`） | **26.924.22138** |
+| `BROWSER_USE_CODEX_APP_VERSION` | **26.924.22138** |
+| Codex Computer Use.app | **26.923.1001242** |
 
 该版本的 `browser-service.mjs` 仍会把 `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` 映射为跳过 `check-url-site-status`。ChatGPT 更新常会升这个版本并改写 `node_repl`；再跑 `./install.sh status`，或依赖 `--persist`。
 
@@ -68,6 +69,19 @@ Windows（Codex Desktop **26.915.4065.0** / 插件 **26.915.31945**）见 [READM
 - 模型确认策略（发布 / 支付 / 改权限）。需要你在对话里明确授权该操作。
 
 用 `@Chrome` / Browser Use 认领你已经登录的标签，不要用 Computer Use 去点那个标签。
+
+---
+
+## 一键安装（macOS Computer Use）
+
+Computer Use 在 Chrome 停在被拦 URL 上时会用原生 `blockedURL`（`-10015`）杀掉会话。这层**不受** `BROWSER_USE_SECURITY_MODE` 控制。
+
+```bash
+chmod +x install-computer-use.sh
+./install-computer-use.sh
+```
+
+改的是 `~/.codex/computer-use/Codex Computer Use.app` 和一份 JS overlay。然后重启 ChatGPT.app，**新开** Computer Use。详见 [README.computer-use.md](README.computer-use.md)。
 
 ---
 
