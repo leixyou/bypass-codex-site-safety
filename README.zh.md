@@ -2,9 +2,14 @@
 
 [English](README.md) · [中文](README.zh.md) · [Windows 指南](README.windows.md) · [Computer Use](README.computer-use.md)
 
-在本机绕过 Codex / ChatGPT Desktop 的 **Browser Use site-safety policy**。
+在本机绕过 Codex / ChatGPT Desktop 的 **站点安全 / URL 策略**。拦法有两套，破解方式也不同：
 
-Codex 打开淘宝、1688、Pixiv 等站点时，经常直接报：
+| 闸门 | 典型报错 | 本仓库怎么过 |
+|---|---|---|
+| **Browser Use**（`browser-service.mjs`） | `site-safety policy` / `Browser use is not permitted on https://…` | 打开官方插件里已有的 `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing`（`./install.sh`） |
+| **Computer Use**（`SkyComputerUseService`） | `blockedURL`（`-10015`）/ 「Computer Use is not allowed on the current browser URL. Stop your work…」 | **破解本机 helper 二进制**（`./install-computer-use.sh`）。没有等价环境变量 |
+
+Codex 打开淘宝、1688、Pixiv 等站点时，Browser Use 经常直接报：
 
 ```text
 Browser Use rejected this action due to browser security policy.
@@ -12,17 +17,19 @@ Reason: The site-safety policy blocks this action; no user permission prompt or 
 Browser use is not permitted on https://www.taobao.com.
 ```
 
-Settings 里 Allow browsing、`~/.codex/browser/config.toml` 白名单都压不过这层。原因是 **云端** `site_status`，不是 Chrome 扩展权限。
+Settings 里 Allow browsing、`~/.codex/browser/config.toml` 白名单都压不过这层。原因是 **云端** `site_status`，不是 Chrome 扩展权限。`./install.sh` 打开客户端里已经存在的 local-testing 开关，跳过 `check-url-site-status`。ChatGPT 一更新会把 `~/.codex/config.toml` 改回去，所以默认安装带自动回补。
 
-本工具打开客户端里已经存在的 local-testing 开关：
+**Computer Use 是另一套原生程序。** `BROWSER_USE_SECURITY_MODE` 进不去 `SkyComputerUseService`。它走 Aura URL 策略 / URL 黑名单，返回 Sky 错误 `blockedURL`（`-10015`），再由 `SkyComputerUseClient` 塞进「停下手头工作」的杀会话文案。所以破解是：
 
-```text
-BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
-```
+- 补丁 `~/.codex/computer-use/Codex Computer Use.app` 里的 `isForbiddenComputerUseTarget` / `allowsForbiddenComputerUseTargets`
+- 写入 `defaults` `ComputerUseAllowForbiddenTargets=true`
+- 改写客户端杀会话字符串
+- JS overlay 把 `-10015` 不当致命 RPC 错误
+- 对本机 helper 做 ad-hoc 重签（辅助功能 / 屏幕录制可能要再授一次）
 
-从而跳过 `check-url-site-status`。ChatGPT 一更新会把 `~/.codex/config.toml` 改回去，所以默认安装带自动回补（macOS LaunchAgent；Windows 上是 HKCU Run 守护进程 + 计划任务）。
+GitHub [Release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v1) 发的是 **补丁安装器**，不是破解好的 ChatGPT.app。详见 [README.computer-use.md](README.computer-use.md)。
 
-与 OpenAI 无关。不 MITM `chatgpt.com`。会改本地插件缓存，让 local-testing 开启时忽略 `Page.navigationBlocked`；应用更新会覆盖该文件，`--persist` 会再打回去。
+与 OpenAI 无关。不 MITM `chatgpt.com`。Browser Use 还会改本地插件缓存，让 local-testing 开启时忽略 `Page.navigationBlocked`；应用更新会覆盖该文件，`--persist` 会再打回去。
 
 ## 实测版本
 
@@ -37,7 +44,7 @@ BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
 
 该版本的 `browser-service.mjs` 仍会把 `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` 映射为跳过 `check-url-site-status`。ChatGPT 更新常会升这个版本并改写 `node_repl`；再跑 `./install.sh status`，或依赖 `--persist`。
 
-Windows（Codex Desktop **26.915.4065.0** / 插件 **26.915.31945**）见 [README.windows.md](README.windows.md)。
+Windows（Codex Desktop **26.915.4065.0** / 插件 **26.915.31945**）见 [README.windows.md](README.windows.md)。Computer Use 原生 URL 策略是另一套 helper，见 [README.computer-use.md](README.computer-use.md)。
 
 ---
 
@@ -51,7 +58,7 @@ Windows（Codex Desktop **26.915.4065.0** / 插件 **26.915.31945**）见 [READM
 |---|---|
 | 云端 `aura/site_status`（就是 “site-safety policy” 那条报错） | 对所有站点跳过 |
 | 本地 origin 白名单 | 可选；默认会写上 `shopping-cn` |
-| Computer Use「当前 Chrome URL 不允许」 | **不管** — 另一套杀会话逻辑 |
+| Computer Use「当前 Chrome URL 不允许」 | 另一套原生 helper — 跑 `./install-computer-use.sh` |
 | 旧会话里模型看到 `site_status` 后拒绕过 | **新开** Codex thread |
 
 `localhost` / `127.0.0.1` 本来就不做 `site_status`。
@@ -62,13 +69,13 @@ Windows（Codex Desktop **26.915.4065.0** / 插件 **26.915.31945**）见 [READM
 
 `./install.sh` 现在会顺手改缓存里的 `browser-service.mjs`，在开关打开时忽略该事件。然后 **新开 thread**。
 
-仍然不管：
+仍然分开的：
 
-- **Computer Use 操作 Chrome**，且前台是 `mp.weixin.qq.com` 等被拦域名——另一套杀会话，不是 Browser Use。
+- **Computer Use 操作 Chrome**，前台是被拦域名——原生 `blockedURL`（`-10015`）。这层用 `./install-computer-use.sh`。
 - 微信后台检测到 Chrome debugger，自己弹出安全验证页。
 - 模型确认策略（发布 / 支付 / 改权限）。需要你在对话里明确授权该操作。
 
-用 `@Chrome` / Browser Use 认领你已经登录的标签，不要用 Computer Use 去点那个标签。
+只需要网页时用 `@Chrome` / Browser Use 认领已登录标签。需要桌面 Computer Use 时，先跑 `./install-computer-use.sh`。
 
 ---
 
@@ -206,11 +213,11 @@ wrapper 用 `exec`，运行中的进程镜像仍是官方 `node_repl`，native p
 `[mcp_servers.node_repl.env]`，`Page.navigationBlocked` 的缓存补丁仍然会打。Codex
 每次启动都会重写 `node_repl` 块，所以靠守护进程回补。见 [README.windows.md](README.windows.md)。
 
-**不会做的事：**
+`./install.sh` **不会做的事：**
 
 - 不劫持 `chatgpt.com/backend-api/aura/site_status`
-- 不改应用包本身（只动本地插件缓存，更新后由 `--persist` 再打）
-- 不动 Computer Use 那套「当前 Chrome URL 不允许」的独立杀会话逻辑
+- 不改 ChatGPT.app 应用包（Browser Use 只动本地插件缓存，更新后由 `--persist` 再打）
+- 不单独破解 Computer Use — 那是 `./install-computer-use.sh`（改本机 `~/.codex/computer-use` helper，并 ad-hoc 重签）
 
 ---
 
@@ -238,7 +245,7 @@ live pid=...        mode=disabled-for-local-testing
 ## 限制
 
 - **模型拒绕过**：旧会话里已经吃过 `site_status` 错误时，模型可能按「禁止 workaround」拒绝继续。换新 thread。
-- **Computer Use**：Chrome 停在被拦 URL 上时，Computer Use 仍可能整段停掉。本工具只管 Browser Use / Chrome plugin。
+- **Computer Use**：`./install.sh` 不管这层。原生 helper 用 `./install-computer-use.sh`（`blockedURL` / `-10015`）。
 - **更新覆盖**：插件缓存目录名随版本变。`--persist` 就是为这个准备的。
 - 已支持 macOS（LaunchAgent）与 Windows（HKCU Run 守护进程 + 计划任务）。
 

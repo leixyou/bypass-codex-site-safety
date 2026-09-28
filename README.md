@@ -2,9 +2,14 @@
 
 [English](README.md) · [中文](README.zh.md) · [Windows guide](README.windows.md) · [Computer Use](README.computer-use.md)
 
-Bypass Codex / ChatGPT Desktop **Browser Use site-safety policy** on your own machine.
+Bypass Codex / ChatGPT Desktop **site-safety / URL policy** on your own machine. There are two separate gates:
 
-When Codex opens Taobao, 1688, Pixiv, and similar sites it often fails immediately with:
+| Gate | Typical error | What this repo does |
+|---|---|---|
+| **Browser Use** (`browser-service.mjs`) | `site-safety policy` / `Browser use is not permitted on https://…` | Turn on the official plugin flag `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` (`./install.sh`) |
+| **Computer Use** (`SkyComputerUseService`) | `blockedURL` (`-10015`) / “Computer Use is not allowed on the current browser URL. Stop your work…” | **Binary patch** of the local helper (`./install-computer-use.sh`). There is no env-flag equivalent |
+
+When Codex opens Taobao, 1688, Pixiv, and similar sites, Browser Use often fails immediately with:
 
 ```text
 Browser Use rejected this action due to browser security policy.
@@ -12,17 +17,19 @@ Reason: The site-safety policy blocks this action; no user permission prompt or 
 Browser use is not permitted on https://www.taobao.com.
 ```
 
-Allowing the site in Settings or in `~/.codex/browser/config.toml` does not override this. The decision is a **cloud** `site_status` check, not a Chrome-extension permission.
+Allowing the site in Settings or in `~/.codex/browser/config.toml` does not override this. The decision is a **cloud** `site_status` check, not a Chrome-extension permission. `./install.sh` turns on a flag the official plugin already implements, which skips `check-url-site-status`. ChatGPT updates rewrite `~/.codex/config.toml`, so the default install also adds a watcher that re-applies that patch.
 
-This tool turns on a flag the official plugin already implements:
+**Computer Use is a different binary.** `BROWSER_USE_SECURITY_MODE` never reaches `SkyComputerUseService`. That helper calls Aura URL policy / a URL blocklist, returns Sky error `blockedURL` (`-10015`), and `SkyComputerUseClient` injects the “stop your work” instruction. The crack is therefore:
 
-```text
-BROWSER_USE_SECURITY_MODE=disabled-for-local-testing
-```
+- patch `isForbiddenComputerUseTarget` / `allowsForbiddenComputerUseTargets` in `~/.codex/computer-use/Codex Computer Use.app`
+- set `defaults` `ComputerUseAllowForbiddenTargets=true`
+- rewrite the client kill string
+- overlay JS so `-10015` is not treated as a fatal RPC error
+- ad-hoc re-sign the local helper (TCC may ask again)
 
-That skips `check-url-site-status`. ChatGPT updates rewrite `~/.codex/config.toml` and drop the wrap, so the default install also adds a watcher that re-applies the patch (LaunchAgent on macOS; HKCU Run + Scheduled Task on Windows).
+The GitHub [release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v1) ships **the patcher**, not a redistributed ChatGPT.app. Details: [README.computer-use.md](README.computer-use.md).
 
-Not affiliated with OpenAI. Does not MITM `chatgpt.com`. It does edit the local plugin cache so `Page.navigationBlocked` is ignored while the flag is on; app updates overwrite that file and `--persist` puts the guard back.
+Not affiliated with OpenAI. Does not MITM `chatgpt.com`. Browser Use also edits the local plugin cache so `Page.navigationBlocked` is ignored while the flag is on; app updates overwrite that file and `--persist` puts the guard back.
 
 ## Tested on
 
@@ -51,7 +58,7 @@ Windows (Codex Desktop **26.915.4065.0** / plugin **26.915.31945**) is documente
 |---|---|
 | Cloud `aura/site_status` (the “site-safety policy” error) | Skipped for every site |
 | Local origin allowlist | Optional; `shopping-cn` is applied by default |
-| Computer Use “this Chrome URL is not allowed” | **Not** covered — separate kill switch |
+| Computer Use “this Chrome URL is not allowed” | Separate native helper — run `./install-computer-use.sh` |
 | Model refusing after an old `site_status` error | Use a **new** Codex thread |
 
 `localhost` / `127.0.0.1` were already exempt from `site_status`.
@@ -62,13 +69,13 @@ If **open** works but **clicking a feature** fails with “browser security poli
 
 `./install.sh` now also patches cached `browser-service.mjs` so that event is ignored while the flag is on. Then start a **new** thread.
 
-Still not covered:
+Still separate:
 
-- **Computer Use on Chrome** while `mp.weixin.qq.com` (or another blocked host) is the front tab — a separate session killer, not Browser Use.
+- **Computer Use on Chrome** while a blocked host is the front tab — native `blockedURL` (`-10015`). Run `./install-computer-use.sh` for that helper.
 - WeChat admin detecting Chrome’s debugger and showing its own security page.
 - Model confirmation policy (publish / pay / change permissions). Say explicitly that you authorize that action.
 
-Prefer `@Chrome` / Browser Use on a tab you already logged in. Do not drive that tab with Computer Use.
+Prefer `@Chrome` / Browser Use on a tab you already logged in when you only need the page. Use Computer Use after `./install-computer-use.sh` when you need the desktop helper.
 
 ---
 
@@ -212,11 +219,11 @@ the flag goes in `[mcp_servers.node_repl.env]`, and the `Page.navigationBlocked`
 cache edit still applies. Codex rewrites the `node_repl` block on every launch, so
 a watcher re-applies the patch — see [README.windows.md](README.windows.md).
 
-It does **not**:
+`./install.sh` does **not**:
 
 - Intercept `chatgpt.com/backend-api/aura/site_status`
-- Patch the app bundle (only the local plugin cache, re-applied after updates)
-- Touch Computer Use’s separate “current Chrome URL is not allowed” session killer
+- Patch the ChatGPT.app bundle (Browser Use only edits the local plugin cache, re-applied after updates)
+- Patch Computer Use by itself — that is `./install-computer-use.sh` (local `~/.codex/computer-use` helper, ad-hoc re-signed)
 
 ---
 
@@ -244,7 +251,7 @@ After a ChatGPT update, run `status` again. If `config ok false` and you install
 ## Limits
 
 - **Model refusal:** if an old thread already saw a `site_status` error, the model may refuse to continue (“no workarounds”). Use a new thread.
-- **Computer Use:** if Chrome is sitting on a blocked URL, Computer Use can still abort the session. This tool only covers Browser Use / the Chrome plugin.
+- **Computer Use:** `./install.sh` does not patch it. Use `./install-computer-use.sh` for the native helper (`blockedURL` / `-10015`).
 - **Updates:** plugin cache directory names change with the app version. That is why `--persist` exists.
 - Supported on macOS (LaunchAgent) and Windows (HKCU Run watcher + Scheduled Task).
 

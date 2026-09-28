@@ -1,13 +1,33 @@
 # Computer Use patch (macOS)
 
-ChatGPT Desktop **Computer Use** enforces a separate native URL/app policy
-(`AuraSiteStatusURLPolicyChecker` / `ComputerUseURLBlocklist` in
-`SkyComputerUseService`). `BROWSER_USE_SECURITY_MODE` does not affect it.
-When Chrome sits on a blocked URL the helper returns Sky error `blockedURL`
-(`-10015`) and the client tells the model to stop the session.
+## What was cracked
 
-This installer patches **your local** Computer Use copy. It does **not** ship
-OpenAI binaries.
+Browser Use can skip cloud `site_status` with the official flag
+`BROWSER_USE_SECURITY_MODE=disabled-for-local-testing`. Computer Use cannot.
+
+The desktop helper is a signed Mach-O (`SkyComputerUseService` /
+`SkyComputerUseClient` under `~/.codex/computer-use/Codex Computer Use.app`).
+It has **no** `BROWSER_USE_SECURITY_MODE` (or any other env) that skips URL
+policy. Native code (`AuraSiteStatusURLPolicyChecker`,
+`ComputerUseURLBlocklist`, `feature_status.computer_use`) returns Sky error
+`blockedURL` (`-10015`). The client then injects:
+
+```text
+This session has been stopped because Computer Use is not allowed on the
+current browser URL. Stop your work and send a final message noting why
+the session has been ended. Note that Computer Use is not allowed on this
+URL even if the user navigates to it themselves.
+```
+
+That is a session kill, not a Browser Use `site_status` toast. Hardened
+Runtime plus parent team-id `2DC432GLL2` means a persistent bypass is a
+**local binary patch + ad-hoc re-sign** of the user-writable helper, plus a
+JS overlay so node_repl does not treat `-10015` as fatal.
+
+The GitHub release is that **patcher**. It does not upload a cracked
+ChatGPT.app or the 23MB official helper.
+
+This installer patches **your local** Computer Use copy.
 
 ## One-shot
 
@@ -48,6 +68,13 @@ The helper is then ad-hoc signed with its original entitlements.
 ./install-computer-use.sh install --dry-run
 ./install-computer-use.sh uninstall
 ```
+
+## 破解说明（同上）
+
+Browser Use 有官方开关；Computer Use 没有。拦在 `SkyComputerUseService` 的
+`blockedURL`（`-10015`），客户端再写「停下手头工作」。所以要对本机
+`~/.codex/computer-use` 里的 helper 打补丁并 ad-hoc 重签。Release 只发安装器，
+不发破解好的官方二进制。
 
 ## Limits
 
