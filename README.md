@@ -19,15 +19,19 @@ Browser use is not permitted on https://www.taobao.com.
 
 Allowing the site in Settings or in `~/.codex/browser/config.toml` does not override this. The decision is a **cloud** `site_status` check, not a Chrome-extension permission. `./install.sh` turns on a flag the official plugin already implements, which skips `check-url-site-status`. ChatGPT updates rewrite `~/.codex/config.toml`, so the default install also adds a watcher that re-applies that patch.
 
-**Computer Use is a different binary.** `BROWSER_USE_SECURITY_MODE` never reaches `SkyComputerUseService`. That helper calls Aura URL policy / a URL blocklist, returns Sky error `blockedURL` (`-10015`), and `SkyComputerUseClient` injects the “stop your work” instruction. The crack is therefore:
+**Computer Use is a different binary.** `BROWSER_USE_SECURITY_MODE` never reaches `SkyComputerUseService`. That helper calls Aura URL policy / a URL blocklist, returns Sky error `blockedURL` (`-10015`), and `SkyComputerUseClient` injects the “stop your work” instruction (the Chinese UI line “当前 URL 不允许 Computer Use” is the model paraphrasing that English kill string). The crack is therefore:
 
 - patch `isForbiddenComputerUseTarget` / `allowsForbiddenComputerUseTargets` in `~/.codex/computer-use/Codex Computer Use.app`
+- skip `throwMappedServerError` for `blockedURL` (`-10015`) so a blocked Chrome URL is not turned into a session-killing RPC error
+- rewrite the kill string in the service, client, and lock-screen guardian
 - set `defaults` `ComputerUseAllowForbiddenTargets=true`
-- rewrite the client kill string
 - overlay JS so `-10015` is not treated as a fatal RPC error
 - ad-hoc re-sign the local helper (TCC may ask again)
+- install LaunchAgent `com.codex-computer-use-lab.repair` — ChatGPT recopies the official helper and rewrites `.mcp.json` on launch
 
-The GitHub [release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v1) ships **the patcher**, not a redistributed ChatGPT.app. Details: [README.computer-use.md](README.computer-use.md).
+Verified working on ChatGPT.app **26.924.22138** after `./install.sh` **and** `./install-computer-use.sh`, then a full quit (Cmd+Q) and a **new** Computer Use turn.
+
+The GitHub [release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v2) ships **the patcher**, not a redistributed ChatGPT.app. Details: [README.computer-use.md](README.computer-use.md).
 
 Not affiliated with OpenAI. Does not MITM `chatgpt.com`. Browser Use also edits the local plugin cache so `Page.navigationBlocked` is ignored while the flag is on; app updates overwrite that file and `--persist` puts the guard back.
 
@@ -40,7 +44,7 @@ Verified locally against:
 | ChatGPT.app | **26.924.22138** |
 | Browser / Chrome plugin (`openai-bundled`) | **26.924.22138** |
 | `BROWSER_USE_CODEX_APP_VERSION` | **26.924.22138** |
-| Codex Computer Use.app | **26.923.1001242** |
+| Codex Computer Use.app | **26.923.1001242** (Computer Use URL kill bypass **verified**) |
 
 On this build, `browser-service.mjs` still maps `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` to skipping `check-url-site-status`. ChatGPT updates often bump this version and rewrite `node_repl`; re-run `./install.sh status` or rely on `--persist`.
 

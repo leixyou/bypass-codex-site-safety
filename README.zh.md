@@ -19,15 +19,19 @@ Browser use is not permitted on https://www.taobao.com.
 
 Settings 里 Allow browsing、`~/.codex/browser/config.toml` 白名单都压不过这层。原因是 **云端** `site_status`，不是 Chrome 扩展权限。`./install.sh` 打开客户端里已经存在的 local-testing 开关，跳过 `check-url-site-status`。ChatGPT 一更新会把 `~/.codex/config.toml` 改回去，所以默认安装带自动回补。
 
-**Computer Use 是另一套原生程序。** `BROWSER_USE_SECURITY_MODE` 进不去 `SkyComputerUseService`。它走 Aura URL 策略 / URL 黑名单，返回 Sky 错误 `blockedURL`（`-10015`），再由 `SkyComputerUseClient` 塞进「停下手头工作」的杀会话文案。所以破解是：
+**Computer Use 是另一套原生程序。** `BROWSER_USE_SECURITY_MODE` 进不去 `SkyComputerUseService`。它走 Aura URL 策略 / URL 黑名单，返回 Sky 错误 `blockedURL`（`-10015`），再由 `SkyComputerUseClient` 塞进「停下手头工作」的杀会话文案。界面里「当前 URL 不允许 Computer Use」是模型把这句英文意译出来的。所以破解是：
 
 - 补丁 `~/.codex/computer-use/Codex Computer Use.app` 里的 `isForbiddenComputerUseTarget` / `allowsForbiddenComputerUseTargets`
+- `throwMappedServerError` 对 `blockedURL`（`-10015`）直接返回，不再把被拦 Chrome URL 变成杀会话 RPC
+- 改写 service / client / lock-screen guardian 里的杀会话字符串
 - 写入 `defaults` `ComputerUseAllowForbiddenTargets=true`
-- 改写客户端杀会话字符串
 - JS overlay 把 `-10015` 不当致命 RPC 错误
 - 对本机 helper 做 ad-hoc 重签（辅助功能 / 屏幕录制可能要再授一次）
+- 安装 LaunchAgent `com.codex-computer-use-lab.repair`——ChatGPT 启动会把官方 helper 拷回来并改写 `.mcp.json`
 
-GitHub [Release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v1) 发的是 **补丁安装器**，不是破解好的 ChatGPT.app。详见 [README.computer-use.md](README.computer-use.md)。
+在 ChatGPT.app **26.924.22138** 上，连续执行 `./install.sh` 和 `./install-computer-use.sh`，Cmd+Q 退出后再**新开** Computer Use，已验证可用。
+
+GitHub [Release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v2) 发的是 **补丁安装器**，不是破解好的 ChatGPT.app。详见 [README.computer-use.md](README.computer-use.md)。
 
 与 OpenAI 无关。不 MITM `chatgpt.com`。Browser Use 还会改本地插件缓存，让 local-testing 开启时忽略 `Page.navigationBlocked`；应用更新会覆盖该文件，`--persist` 会再打回去。
 
@@ -40,7 +44,7 @@ GitHub [Release](https://github.com/leixyou/bypass-codex-site-safety/releases/ta
 | ChatGPT.app | **26.924.22138** |
 | Browser / Chrome 插件（`openai-bundled`） | **26.924.22138** |
 | `BROWSER_USE_CODEX_APP_VERSION` | **26.924.22138** |
-| Codex Computer Use.app | **26.923.1001242** |
+| Codex Computer Use.app | **26.923.1001242**（Computer Use URL 拦截 **已验证可过**） |
 
 该版本的 `browser-service.mjs` 仍会把 `BROWSER_USE_SECURITY_MODE=disabled-for-local-testing` 映射为跳过 `check-url-site-status`。ChatGPT 更新常会升这个版本并改写 `node_repl`；再跑 `./install.sh status`，或依赖 `--persist`。
 
