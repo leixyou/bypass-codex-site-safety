@@ -89,9 +89,10 @@ chmod +x install-computer-use.sh
 ./install-computer-use.sh
 ```
 
-Patches `~/.codex/computer-use/Codex Computer Use.app` and a JS overlay. Restart
-ChatGPT.app, then start a new Computer Use turn. Details:
-[README.computer-use.md](README.computer-use.md).
+Patches `~/.codex/computer-use/Codex Computer Use.app` (including `blockedURL`
+`-10015`) and a JS overlay, then installs a LaunchAgent so ChatGPT cannot keep
+restoring the official helper. Restart ChatGPT.app, then start a new Computer
+Use turn. Details: [README.computer-use.md](README.computer-use.md).
 
 ---
 

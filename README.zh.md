@@ -88,7 +88,7 @@ chmod +x install-computer-use.sh
 ./install-computer-use.sh
 ```
 
-改的是 `~/.codex/computer-use/Codex Computer Use.app` 和一份 JS overlay。然后重启 ChatGPT.app，**新开** Computer Use。详见 [README.computer-use.md](README.computer-use.md)。
+改的是 `~/.codex/computer-use/Codex Computer Use.app`（含 `blockedURL` `-10015`）和 JS overlay，并装 LaunchAgent，避免 ChatGPT 启动时把官方 helper 盖回来。然后重启 ChatGPT.app，**新开** Computer Use。详见 [README.computer-use.md](README.computer-use.md)。
 
 ---
 

@@ -59,7 +59,15 @@ asks, re-grant Accessibility and Screen Recording to “ChatGPT Computer Use”
 | `~/.codex/mcp-wrappers/cua-node_modules` | JS overlay: ignore `blockedURL` `-10015`; treat app policy `denied`/`forbidden` as allowed |
 | unified-computer-use `.mcp.json` | prepend the overlay to `NODE_REPL_NODE_MODULE_DIRS` |
 
-The helper is then ad-hoc signed with its original entitlements.
+The helper is then ad-hoc signed with its original entitlements. ChatGPT
+re-copies the official helper and rewrites `.mcp.json` on launch, so install
+also adds LaunchAgent `com.codex-computer-use-lab.repair` (WatchPaths + every
+2 minutes) to put the patch back. Sparkle auto-update on the helper is turned
+off.
+
+`blockedURL` (`-10015`) is skipped in `throwMappedServerError`, so the native
+helper no longer turns a blocked Chrome URL into a session-killing RPC error.
+The JS overlay also drops `-10015` if the official module path is used first.
 
 ## Commands
 

@@ -46,10 +46,22 @@ JS_PIPE_OLD = (
     'request:null,requestType:"jsonRPC"})):r.resolve(e.result)'
 )
 JS_PIPE_NEW = (
-    '"error"in e?e.error.code===-10015?r.resolve(e.result||{}):'
+    '"error"in e?e.error&&(e.error.code===-10015||String(e.error.message||"").'
+    'includes("not allowed on the current browser URL"))?r.resolve(e.result||{}):'
     'r.reject(new a({code:e.error.code,message:e.error.message,'
     'request:null,requestType:"jsonRPC"})):r.resolve(e.result)'
 )
+JS_TELEMETRY_OLD = (
+    "catch(e){throw s=e instanceof n&&(e.code===a.userStoppedSession||"
+    'e.code===a.userIntervened)?"cancelled":"failed",e}'
+)
+JS_TELEMETRY_NEW = (
+    "catch(e){if(e instanceof n&&e.code===a.blockedURL)return;"
+    "throw s=e instanceof n&&(e.code===a.userStoppedSession||"
+    'e.code===a.userIntervened)?"cancelled":"failed",e}'
+)
+THROW_MAPPED_OLD = bytes.fromhex("fd7bbfa9fd03009167060094fd7bc1a8c0035fd6")
+CUA_LABEL = "com.codex-computer-use-lab.repair"
 JS_POLICY_OLD = (
     'switch(e.decision){case"allowed":return e.target;'
     'case"denied":throw new Error(`Computer Use is blocked from using the app '
@@ -262,6 +274,9 @@ def patch_service_policy(path: Path, *, dry: bool, quiet: bool) -> list[str]:
             if patch_arm64_mov_ret(buf, text_off, text_vm, fn, true=True):
                 changed.append(f"allowsForbiddenComputerUseTargets@{fn:#x}->true")
 
+    if patch_throw_mapped_blocked_url(buf, text_off, text_vm):
+        changed.append("throwMappedServerError skips blockedURL(-10015)")
+
     if not changed:
         log(f"native policy already patched: {path}", quiet=quiet)
         return []
@@ -272,6 +287,48 @@ def patch_service_policy(path: Path, *, dry: bool, quiet: bool) -> list[str]:
     path.write_bytes(buf)
     log(f"patched {path.name}: {', '.join(changed)}", quiet=quiet)
     return changed
+
+
+def patch_throw_mapped_blocked_url(buf: bytearray, text_off: int, text_vm: int) -> bool:
+    """Make ComputerUseIPCClient.throwMappedServerError a no-op for -10015."""
+    idx = bytes(buf).find(THROW_MAPPED_OLD)
+    if idx < 0:
+        return False
+    fn_vm = text_vm + (idx - text_off)
+    orig_bl = struct.unpack_from("<I", THROW_MAPPED_OLD, 8)[0]
+    imm26 = orig_bl & 0x3FFFFFF
+    if orig_bl & 0x8000000:
+        imm26 -= 1 << 26
+    impl_vm = (fn_vm + 8) + imm26 * 4
+    movn = 0x12800000 | (10014 << 5) | 8  # movn w8, #10014 => w8 = -10015
+    cmpw = 0x6B00001F | (8 << 16)  # cmp w0, w8
+    beq = 0x54000000 | (2 << 5)  # b.eq .+8 -> ret
+    b_imm = ((impl_vm - (fn_vm + 12)) // 4) & 0x3FFFFFF
+    branch = 0x14000000 | b_imm
+    new = struct.pack("<IIIII", movn, cmpw, beq, branch, 0xD65F03C0)
+    if buf[idx : idx + 20] == new:
+        return False
+    buf[idx : idx + 20] = new
+    return True
+
+
+def patch_kill_messages_in_tree(root: Path, *, dry: bool, quiet: bool) -> int:
+    n = 0
+    for path in root.rglob("*"):
+        if not path.is_file() or path.stat().st_size < len(KILL_MSG):
+            continue
+        try:
+            magic = path.read_bytes()[:4]
+        except OSError:
+            continue
+        if magic not in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
+            continue
+        try:
+            if patch_client_kill_message(path, dry=dry, quiet=quiet):
+                n += 1
+        except (OSError, SystemExit):
+            continue
+    return n
 
 
 def patch_client_kill_message(path: Path, *, dry: bool, quiet: bool) -> bool:
@@ -414,6 +471,33 @@ def build_js_overlay(*, dry: bool, quiet: bool) -> int:
         return 0
     n = 0
     dest_root = overlay_modules()
+    sample = (
+        dest_root
+        / "@oai"
+        / "sky"
+        / "dist"
+        / "project"
+        / "cua"
+        / "sky_js"
+        / "src"
+        / "targets"
+        / "mac"
+        / "native-pipe.js"
+    )
+    if sample.is_file() and not sample.is_symlink():
+        try:
+            txt = sample.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            txt = ""
+        if JS_PIPE_NEW in txt and JS_TELEMETRY_NEW in (
+            (dest_root / "@oai/sky/dist/project/cua/sky_js/src/targets/mac/computer-use-policy.js").read_text(
+                encoding="utf-8", errors="replace"
+            )
+            if (dest_root / "@oai/sky/dist/project/cua/sky_js/src/targets/mac/computer-use-policy.js").is_file()
+            else ""
+        ):
+            log("JS overlay already patched", quiet=quiet)
+            return 0
     for pkg in ("@oai/sky", "@oai/cua"):
         src_pkg = next((r / pkg for r in roots if (r / pkg).is_dir()), None)
         if src_pkg is None:
@@ -445,10 +529,16 @@ def build_js_overlay(*, dry: bool, quiet: bool) -> int:
     if dry:
         return n
     for js in dest_root.rglob("native-pipe.js"):
+        if js.is_symlink():
+            continue
         if patch_js_file(js, JS_PIPE_OLD, JS_PIPE_NEW, dry=dry, quiet=quiet):
             n += 1
     for js in dest_root.rglob("computer-use-policy.js"):
+        if js.is_symlink():
+            continue
         if patch_js_file(js, JS_POLICY_OLD, JS_POLICY_NEW, dry=dry, quiet=quiet):
+            n += 1
+        if patch_js_file(js, JS_TELEMETRY_OLD, JS_TELEMETRY_NEW, dry=dry, quiet=quiet):
             n += 1
     return n
 
@@ -521,6 +611,87 @@ def relax_parent_requirement(app: Path, *, dry: bool, quiet: bool) -> None:
     log(f"relaxed parent team requirement: {req.name}", quiet=quiet)
 
 
+def disable_sparkle(app: Path, *, dry: bool, quiet: bool) -> None:
+    info = app / "Contents" / "Info.plist"
+    if not info.exists():
+        return
+    data = plistlib.loads(info.read_bytes())
+    if data.get("SUEnableAutomaticChecks") is False and data.get("SUAutomaticallyUpdate") is False:
+        return
+    data["SUEnableAutomaticChecks"] = False
+    data["SUAutomaticallyUpdate"] = False
+    if dry:
+        log(f"would disable Sparkle updates in {info}", quiet=quiet)
+        return
+    backup_file(info)
+    info.write_bytes(plistlib.dumps(data))
+    log("disabled Computer Use Sparkle auto-update", quiet=quiet)
+
+
+def installed_script() -> Path:
+    return wrappers_dir() / "computer_use_lab.py"
+
+
+def install_self(*, quiet: bool) -> None:
+    src = Path(__file__).resolve()
+    dst = installed_script()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src != dst:
+        shutil.copy2(src, dst)
+        dst.chmod(dst.stat().st_mode | 0o111)
+    log(f"installed tool: {dst}", quiet=quiet)
+
+
+def persist_macos(*, quiet: bool) -> None:
+    install_self(quiet=quiet)
+    agent = home() / "Library" / "LaunchAgents" / f"{CUA_LABEL}.plist"
+    agent.parent.mkdir(parents=True, exist_ok=True)
+    plist = {
+        "Label": CUA_LABEL,
+        "ProgramArguments": [
+            sys.executable,
+            str(installed_script()),
+            "repair",
+            "--quiet",
+        ],
+        "WatchPaths": [
+            str(codex_home() / "computer-use"),
+            str(codex_home() / "plugins" / "cache" / "openai-bundled" / "unified-computer-use"),
+        ],
+        "StartInterval": 120,
+        "RunAtLoad": True,
+        "StandardOutPath": str(wrappers_dir() / "computer-use-lab.log"),
+        "StandardErrorPath": str(wrappers_dir() / "computer-use-lab.log"),
+    }
+    agent.write_bytes(plistlib.dumps(plist))
+    uid = os.getuid()
+    target = f"gui/{uid}"
+    subprocess.run(["launchctl", "bootout", target, str(agent)], check=False, capture_output=True)
+    subprocess.run(["launchctl", "unload", str(agent)], check=False, capture_output=True)
+    loaded = subprocess.run(
+        ["launchctl", "bootstrap", target, str(agent)], capture_output=True, text=True
+    )
+    if loaded.returncode != 0:
+        loaded = subprocess.run(["launchctl", "load", str(agent)], capture_output=True, text=True)
+    if loaded.returncode != 0:
+        raise SystemExit(loaded.stderr.strip() or "launchctl load failed")
+    log(f"persist: {agent}", quiet=quiet)
+
+
+def unpersist_macos(*, quiet: bool) -> None:
+    agent = home() / "Library" / "LaunchAgents" / f"{CUA_LABEL}.plist"
+    if agent.exists():
+        uid = os.getuid()
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{uid}", str(agent)],
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(["launchctl", "unload", str(agent)], check=False, capture_output=True)
+        agent.unlink()
+        log(f"removed LaunchAgent: {agent}", quiet=quiet)
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     if not IS_MAC:
         raise SystemExit("Computer Use native patch is macOS-only")
@@ -540,18 +711,20 @@ def cmd_install(args: argparse.Namespace) -> int:
         set_defaults(quiet=args.quiet)
     if svc.is_file():
         patch_service_policy(svc, dry=args.dry_run, quiet=args.quiet)
-    if client.is_file():
-        patch_client_kill_message(client, dry=args.dry_run, quiet=args.quiet)
+    patch_kill_messages_in_tree(app, dry=args.dry_run, quiet=args.quiet)
     relax_parent_requirement(app, dry=args.dry_run, quiet=args.quiet)
+    disable_sparkle(app, dry=args.dry_run, quiet=args.quiet)
     build_js_overlay(dry=args.dry_run, quiet=args.quiet)
     patch_mcp_json(dry=args.dry_run, quiet=args.quiet)
+    persist = getattr(args, "persist", True)
     if not args.dry_run:
         client_app = app / "Contents" / "SharedSupport" / "SkyComputerUseClient.app"
         if client_app.is_dir():
             adhoc_sign(client_app, quiet=args.quiet)
         adhoc_sign(app, quiet=args.quiet)
-        xattr = subprocess.run(["xattr", "-cr", str(app)], capture_output=True)
-        _ = xattr
+        subprocess.run(["xattr", "-cr", str(app)], capture_output=True)
+        if persist:
+            persist_macos(quiet=args.quiet)
     log(
         "done. Restart ChatGPT.app and start a NEW Computer Use turn. "
         "Re-grant Accessibility / Screen Recording if macOS prompts "
@@ -598,10 +771,14 @@ def cmd_status(args: argparse.Namespace) -> int:
                             allow = True
         print(f"service isForbidden patched={forbidden}")
         print(f"service allowForbidden patched={allow}")
+        print(f"service blockedURL mapper patched={THROW_MAPPED_OLD not in raw}")
+        print(f"service kill message rewritten={KILL_MSG not in raw}")
     if client.exists():
         raw = client.read_bytes()
         print(f"client kill message rewritten={KILL_MSG not in raw}")
     print(f"JS overlay          {overlay_modules()} exists={overlay_modules().exists()}")
+    agent = home() / "Library" / "LaunchAgents" / f"{CUA_LABEL}.plist"
+    print(f"LaunchAgent         {agent} exists={agent.exists()}")
     r = subprocess.run(
         ["defaults", "read", CUA_ID, DEFAULTS_KEY],
         capture_output=True,
@@ -614,6 +791,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_uninstall(args: argparse.Namespace) -> int:
     if not args.dry_run:
         kill_cua(quiet=args.quiet)
+        unpersist_macos(quiet=args.quiet)
         subprocess.run(["defaults", "delete", CUA_ID, DEFAULTS_KEY], capture_output=True)
     src = bundled_cua_app()
     dst = cua_user_app()
@@ -642,6 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     ins = sub.add_parser("install", help="patch ~/.codex/computer-use and JS overlay")
     add_common(ins)
+    ins.add_argument(
+        "--persist",
+        action="store_true",
+        default=True,
+        help="install LaunchAgent that re-applies after ChatGPT restores the helper",
+    )
+    ins.add_argument("--no-persist", dest="persist", action="store_false")
     ins.set_defaults(func=cmd_install)
 
     st = sub.add_parser("status", help="show whether the Computer Use patch is active")
@@ -654,7 +839,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = sub.add_parser("repair", help="re-apply install")
     add_common(rp)
-    rp.set_defaults(func=cmd_install)
+    rp.set_defaults(func=cmd_install, persist=False)
     return p
 
 
