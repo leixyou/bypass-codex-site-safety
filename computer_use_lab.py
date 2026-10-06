@@ -1026,6 +1026,15 @@ def relax_parent_requirement(app: Path, *, dry: bool, quiet: bool) -> None:
         '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
         '<plist version="1.0">\n<dict>\n</dict>\n</plist>\n'
     )
+    # Idempotent: the bundle can sit inside a TCC-protected tree where a
+    # launchd-derived process has no write access. Never write when the file
+    # already holds the relaxed requirement.
+    try:
+        if req.read_text(encoding="utf-8") == body:
+            log(f"unchanged: {req.name}", quiet=quiet)
+            return
+    except OSError:
+        pass
     if dry:
         log(f"would relax parent requirement {req}", quiet=quiet)
         return
@@ -1124,6 +1133,14 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 def _cmd_install(args: argparse.Namespace) -> int:
     app = ensure_user_app(dry=args.dry_run, quiet=args.quiet)
+    if IS_MAC and app.exists() and not os.access(app, os.W_OK):
+        # macOS keeps this bundle behind TCC (com.apple.macl) + provenance.
+        # A launchd-derived process has no write access to it at all.
+        if not args.quiet:
+            print("Computer Use bundle is not writable in this context.", flush=True)
+            print("  cause: TCC macl/provenance protection on the app bundle", flush=True)
+            print("  fix:   re-run this command from a Terminal window", flush=True)
+        return 3
     svc = app / "Contents" / "MacOS" / "SkyComputerUseService"
     client = (
         app
