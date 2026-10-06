@@ -31,7 +31,27 @@ This installer patches **your local** Computer Use copy.
 
 **Verified** on ChatGPT.app **26.924.22138** / Codex Computer Use.app **26.923.1001242**: after `./install-computer-use.sh`, a full quit of ChatGPT.app, and a new Computer Use turn, Chrome on a previously blocked URL no longer kills the session with `blockedURL`.
 
-v1 only patched forbidden-app checks. ChatGPT recopies the official helper on launch, so that patch disappeared and the English kill string still reached the model (paraphrased in the UI as “当前 URL 不允许 Computer Use”). v2 skips `throwMappedServerError` for `-10015` and installs LaunchAgent `com.codex-computer-use-lab.repair`.
+v1 only patched forbidden-app checks. ChatGPT recopies the official helper on launch, so that patch disappeared and the English kill string still reached the model (paraphrased in the UI as “当前 URL 不允许 Computer Use”). v2 skips `throwMappedServerError` for `-10015` and installs LaunchAgent `com.codex-computer-use-lab.repair`. v2 also kept OpenAI team entitlements on an ad-hoc signature, so stock SIP aborted launch with AMFI `-424` ([issue #4](https://github.com/leixyou/bypass-codex-site-safety/issues/4)). v3 strips those entitlements so **stock SIP** can start the helper, and injects an App Group/pipe shim.
+
+## Requirements (stock SIP)
+
+Disabling SIP is **not** required and is **not** a supported prerequisite.
+
+| Check | Needed? |
+|---|---|
+| SIP enabled (stock) | Yes — this is the supported configuration |
+| `csrutil disable` / Debugging Restrictions off | No |
+| Apple Silicon **Developer Mode** | Yes, for ad-hoc helper launch. System Settings → Privacy & Security → Developer Mode, then restart |
+| Accessibility + Screen Recording | Yes — ad-hoc re-sign is a new TCC identity |
+
+`./install-computer-use.sh` and `./install-computer-use.sh status` print `SIP` and `Developer Mode`. Install exits `2` when Developer Mode is off on Apple Silicon (patch is applied; helper will not launch until you enable it).
+
+v2 on stock SIP failed with:
+
+```text
+AppleMobileFileIntegrityError Code=-424
+The file is adhoc signed but contains restricted entitlements
+```
 
 ## One-shot
 
@@ -40,6 +60,7 @@ git clone https://github.com/leixyou/bypass-codex-site-safety.git
 cd bypass-codex-site-safety
 chmod +x install-computer-use.sh
 ./install-computer-use.sh
+./install-computer-use.sh status
 ```
 
 That is:
@@ -61,15 +82,26 @@ asks, re-grant Accessibility and Screen Recording to “ChatGPT Computer Use”
 | service / client / lock-screen guardian | rewrite the “stop your work / not allowed on the current browser URL” kill string |
 | parent code requirement | drop the OpenAI team-id requirement so the ad-hoc helper can spawn its client |
 | helper `Info.plist` | Sparkle auto-update off |
+| `SkyComputerUseService` signature | ad-hoc, unrestricted entitlements only; OpenAI provision profile removed |
+| `cua-appgroup.dylib` | injected into the service so App Group / native pipe work without team entitlements |
 | `~/.codex/mcp-wrappers/cua-node_modules` | JS overlay: ignore `blockedURL` `-10015`; treat app policy `denied`/`forbidden` as allowed |
 | unified-computer-use `.mcp.json` | prepend the overlay to `NODE_REPL_NODE_MODULE_DIRS` |
 | LaunchAgent `com.codex-computer-use-lab.repair` | re-apply after ChatGPT restores the official helper (WatchPaths + every 2 min) |
 
-The helper is then ad-hoc signed with its original entitlements. ChatGPT
-re-copies the official helper and rewrites `.mcp.json` on launch, so install
-also adds LaunchAgent `com.codex-computer-use-lab.repair` (WatchPaths + every
-2 minutes) to put the patch back. Sparkle auto-update on the helper is turned
-off.
+The helper is then ad-hoc signed with **unrestricted** entitlements only
+(`com.apple.security.*` such as Apple Events and `cs.disable-library-validation`).
+Team-bound keys (`application-identifier`, `team-identifier`, application-groups,
+`keychain-access-groups`) and `embedded.provisionprofile` are stripped. Keeping
+those on an ad-hoc signature makes AMFI abort launch with
+`AppleMobileFileIntegrityError -424` on stock SIP (see
+[issue #4](https://github.com/leixyou/bypass-codex-site-safety/issues/4)).
+
+A small `cua-appgroup.dylib` is injected into `SkyComputerUseService` so App Group
+container lookup and the native pipe still work without those team entitlements.
+ChatGPT re-copies the official helper and rewrites `.mcp.json` on launch, so
+install also adds LaunchAgent `com.codex-computer-use-lab.repair` (WatchPaths +
+every 2 minutes) to put the patch back. Sparkle auto-update on the helper is
+turned off.
 
 `blockedURL` (`-10015`) is skipped in `throwMappedServerError`, so the native
 helper no longer turns a blocked Chrome URL into a session-killing RPC error.
@@ -88,8 +120,11 @@ The JS overlay also drops `-10015` if the official module path is used first.
 Browser Use 有官方开关；Computer Use 没有。拦在 `SkyComputerUseService` 的
 `blockedURL`（`-10015`），客户端再写「停下手头工作」。界面「当前 URL 不允许
 Computer Use」是这句英文的意译。v1 只改了 forbidden-app，ChatGPT 一启动会把
-官方 helper 盖回来。v2 跳过 `-10015` 映射，并装 LaunchAgent 回补。Release 只发
-安装器，不发破解好的官方二进制。
+官方 helper 盖回来。v2 跳过 `-10015` 映射，并装 LaunchAgent 回补。v2 把 OpenAI
+team entitlements 留在 ad-hoc 签名上，库存 SIP 下 AMFI `-424`（issue #4）。v3
+签名时去掉这些项，**库存 SIP** 可以启动 helper，并注入 App Group / native pipe
+shim。不需要关闭 SIP。Apple Silicon 要打开 Developer Mode。Release 只发安装器，
+不发破解好的官方二进制。
 
 本机 ChatGPT.app **26.924.22138** 已验证：安装后 Cmd+Q，新开 Computer Use 可通过
 原先被拦的 URL。
@@ -97,6 +132,8 @@ Computer Use」是这句英文的意译。v1 只改了 forbidden-app，ChatGPT �
 ## Limits
 
 - macOS arm64. Windows Computer Use is a different native stack.
+- Stock SIP is supported. Do not disable SIP for this installer.
+- Apple Silicon: Developer Mode must be on, or install exits `2` and the helper will not launch.
 - ChatGPT recopies `~/.codex/computer-use` on launch; the LaunchAgent puts the patch back. If `status` shows the mapper unpatched, wait ~2 minutes or re-run `./install-computer-use.sh`.
 - Computer Use still needs Accessibility / Screen Recording (ad-hoc re-sign is a new TCC identity).
 - This does not MITM `chatgpt.com`.

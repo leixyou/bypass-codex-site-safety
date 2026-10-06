@@ -26,12 +26,15 @@ Allowing the site in Settings or in `~/.codex/browser/config.toml` does not over
 - rewrite the kill string in the service, client, and lock-screen guardian
 - set `defaults` `ComputerUseAllowForbiddenTargets=true`
 - overlay JS so `-10015` is not treated as a fatal RPC error
-- ad-hoc re-sign the local helper (TCC may ask again)
+- ad-hoc re-sign the local helper with unrestricted entitlements only (stock SIP; AMFI `-424` if team entitlements are kept)
+- inject `cua-appgroup.dylib` so the native pipe still works without OpenAI team entitlements
 - install LaunchAgent `com.codex-computer-use-lab.repair` — ChatGPT recopies the official helper and rewrites `.mcp.json` on launch
+
+**Stock SIP is the supported path. Disabling SIP is not required.** Apple Silicon needs **Developer Mode** on (System Settings → Privacy & Security → Developer Mode, then restart). `./install-computer-use.sh` and `status` print SIP + Developer Mode; install exits `2` if Developer Mode is off.
 
 Verified working on ChatGPT.app **26.924.22138** after `./install.sh` **and** `./install-computer-use.sh`, then a full quit (Cmd+Q) and a **new** Computer Use turn.
 
-The GitHub [release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v2) ships **the patcher**, not a redistributed ChatGPT.app. Details: [README.computer-use.md](README.computer-use.md).
+The GitHub [release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v3) ships **the patcher**, not a redistributed ChatGPT.app. Details: [README.computer-use.md](README.computer-use.md).
 
 Not affiliated with OpenAI. Does not MITM `chatgpt.com`. Browser Use also edits the local plugin cache so `Page.navigationBlocked` is ignored while the flag is on; app updates overwrite that file and `--persist` puts the guard back.
 
@@ -91,7 +94,12 @@ is on a blocked URL. That path is **not** `BROWSER_USE_SECURITY_MODE`.
 ```bash
 chmod +x install-computer-use.sh
 ./install-computer-use.sh
+./install-computer-use.sh status
 ```
+
+Apple Silicon: turn on Developer Mode first, then restart. The installer
+does **not** ask you to disable SIP. Exit code `2` means the helper is
+patched but will not launch until Developer Mode is on.
 
 Patches `~/.codex/computer-use/Codex Computer Use.app` (including `blockedURL`
 `-10015`) and a JS overlay, then installs a LaunchAgent so ChatGPT cannot keep

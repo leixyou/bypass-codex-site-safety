@@ -26,12 +26,15 @@ Settings 里 Allow browsing、`~/.codex/browser/config.toml` 白名单都压不�
 - 改写 service / client / lock-screen guardian 里的杀会话字符串
 - 写入 `defaults` `ComputerUseAllowForbiddenTargets=true`
 - JS overlay 把 `-10015` 不当致命 RPC 错误
-- 对本机 helper 做 ad-hoc 重签（辅助功能 / 屏幕录制可能要再授一次）
+- 对本机 helper 做 ad-hoc 重签，只保留 unrestricted entitlements（库存 SIP 路径；保留 team entitlements 会 AMFI `-424`）
+- 注入 `cua-appgroup.dylib`，没有 OpenAI team entitlements 时 native pipe 仍可用
 - 安装 LaunchAgent `com.codex-computer-use-lab.repair`——ChatGPT 启动会把官方 helper 拷回来并改写 `.mcp.json`
+
+**支持库存 SIP，不需要关闭 SIP。** Apple Silicon 要打开 **Developer Mode**（设置 → 隐私与安全性 → 开发者模式，然后重启）。`./install-computer-use.sh` 和 `status` 会打印 SIP / Developer Mode；Developer Mode 没开时安装退出码为 `2`。
 
 在 ChatGPT.app **26.924.22138** 上，连续执行 `./install.sh` 和 `./install-computer-use.sh`，Cmd+Q 退出后再**新开** Computer Use，已验证可用。
 
-GitHub [Release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v2) 发的是 **补丁安装器**，不是破解好的 ChatGPT.app。详见 [README.computer-use.md](README.computer-use.md)。
+GitHub [Release](https://github.com/leixyou/bypass-codex-site-safety/releases/tag/computer-use-v3) 发的是 **补丁安装器**，不是破解好的 ChatGPT.app。详见 [README.computer-use.md](README.computer-use.md)。
 
 与 OpenAI 无关。不 MITM `chatgpt.com`。Browser Use 还会改本地插件缓存，让 local-testing 开启时忽略 `Page.navigationBlocked`；应用更新会覆盖该文件，`--persist` 会再打回去。
 
@@ -90,7 +93,10 @@ Computer Use 在 Chrome 停在被拦 URL 上时会用原生 `blockedURL`（`-100
 ```bash
 chmod +x install-computer-use.sh
 ./install-computer-use.sh
+./install-computer-use.sh status
 ```
+
+Apple Silicon 先打开 Developer Mode 再重启。安装器**不会**要求关闭 SIP。退出码 `2` 表示补丁已打上，但 Developer Mode 没开，helper 起不来。
 
 改的是 `~/.codex/computer-use/Codex Computer Use.app`（含 `blockedURL` `-10015`）和 JS overlay，并装 LaunchAgent，避免 ChatGPT 启动时把官方 helper 盖回来。然后重启 ChatGPT.app，**新开** Computer Use。详见 [README.computer-use.md](README.computer-use.md)。
 

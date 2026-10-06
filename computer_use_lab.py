@@ -7,13 +7,16 @@ overlay under ~/.codex/mcp-wrappers. It does not redistribute OpenAI binaries.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import platform
 import plistlib
 import shutil
 import struct
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -91,6 +94,32 @@ def cua_user_app() -> Path:
     return codex_home() / "computer-use" / "Codex Computer Use.app"
 
 
+def native_pipe_path() -> Path:
+    # Keep this outside ~/.codex/computer-use: that directory is a LaunchAgent
+    # WatchPath, and creating the socket there would re-run repair/kill_cua.
+    return wrappers_dir() / "cua-ipc" / "computeruse.sock"
+
+
+# Team-bound / profile-gated keys. Ad-hoc signatures cannot hold these;
+# AMFI kills the process with AppleMobileFileIntegrityError -424
+# ("adhoc signed but contains restricted entitlements") under stock SIP.
+RESTRICTED_ENTITLEMENT_KEYS = {
+    "com.apple.application-identifier",
+    "application-identifier",
+    "com.apple.developer.team-identifier",
+    "keychain-access-groups",
+    "com.apple.security.application-groups",
+}
+
+
+def is_adhoc_allowed_entitlement(key: str) -> bool:
+    if key in RESTRICTED_ENTITLEMENT_KEYS:
+        return False
+    if key.startswith("com.apple.developer.") or key.startswith("com.apple.private."):
+        return False
+    return key.startswith("com.apple.security.")
+
+
 def bundled_cua_app() -> Path | None:
     for p in (
         Path("/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai/sky/Codex Computer Use.app"),
@@ -123,6 +152,18 @@ def backups_dir() -> Path:
 def log(msg: str, *, quiet: bool = False) -> None:
     if not quiet:
         print(msg, flush=True)
+
+
+@contextmanager
+def install_lock():
+    path = wrappers_dir() / "computer-use-lab.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fp:
+        fcntl.flock(fp, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fp, fcntl.LOCK_UN)
 
 
 def backup_file(path: Path) -> Path | None:
@@ -355,71 +396,439 @@ def patch_client_kill_message(path: Path, *, dry: bool, quiet: bool) -> bool:
     return True
 
 
-def extract_entitlements(app: Path) -> Path:
-    dest = backups_dir() / f"{app.name}.entitlements.plist"
-    dest.parent.mkdir(parents=True, exist_ok=True)
+def extract_entitlements(app: Path) -> dict:
     r = subprocess.run(
         ["codesign", "-d", "--entitlements", "-", "--xml", str(app)],
         capture_output=True,
     )
-    if r.returncode != 0 or not r.stdout:
-        raise SystemExit(f"codesign -d entitlements failed for {app}: {r.stderr.decode(errors='replace')}")
-    xml = r.stdout
-    # codesign may prefix with a path line
+    xml = r.stdout or b""
     i = xml.find(b"<?xml")
-    if i >= 0:
-        xml = xml[i:]
-    dest.write_bytes(xml)
+    if i < 0:
+        return {}
+    try:
+        data = plistlib.loads(xml[i:])
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def sanitize_entitlements(ents: dict) -> dict:
+    out = {k: v for k, v in ents.items() if is_adhoc_allowed_entitlement(str(k))}
+    out.setdefault("com.apple.security.automation.apple-events", True)
+    out.setdefault("com.apple.security.cs.disable-library-validation", True)
+    out.setdefault("com.apple.security.cs.allow-dyld-environment-variables", True)
+    return out
+
+
+def write_entitlements_plist(name: str, ents: dict) -> Path:
+    dest = backups_dir() / f"{name}.adhoc.entitlements.plist"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(plistlib.dumps(ents))
     return dest
 
 
+def strip_provision_profiles(root: Path) -> None:
+    for p in root.rglob("embedded.provisionprofile"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def nested_sign_targets(app: Path) -> list[Path]:
+    out: list[Path] = []
+    for folder in ("SharedSupport", "Frameworks", "PlugIns", "Helpers", "Resources"):
+        base = app / "Contents" / folder
+        if not base.is_dir():
+            continue
+        for p in sorted(base.iterdir()):
+            if p.suffix in {".app", ".framework", ".bundle", ".xpc", ".dylib"}:
+                out.append(p)
+    return out
+
+
+def codesign_adhoc(path: Path, ent_path: Path | None) -> None:
+    if not path.exists():
+        return
+    cmd = [
+        "codesign",
+        "--force",
+        "--sign",
+        "-",
+        "--timestamp=none",
+        "--options",
+        "runtime",
+        "--generate-entitlement-der",
+    ]
+    if ent_path is not None:
+        cmd.extend(["--entitlements", str(ent_path)])
+    cmd.append(str(path))
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 and "--generate-entitlement-der" in cmd:
+        cmd = [c for c in cmd if c != "--generate-entitlement-der"]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        if not path.exists():
+            return
+        err = (r.stderr or r.stdout or "").strip()
+        if "No such file or directory" in err:
+            return
+        raise SystemExit(f"codesign failed for {path}: {err}")
+
+
 def adhoc_sign(app: Path, *, quiet: bool) -> None:
-    ent = extract_entitlements(app)
-    nested = list(app.glob("Contents/SharedSupport/*.app"))
-    nested += list(app.glob("Contents/SharedSupport/*.app/Contents/Resources/*.bundle"))
-    for inner in nested:
-        subprocess.run(
-            ["codesign", "--force", "--sign", "-", "--timestamp=none", "--options", "runtime", str(inner)],
-            check=False,
-            capture_output=True,
+    if app.is_dir() and (app / "Contents").is_dir():
+        strip_provision_profiles(app)
+        for inner in nested_sign_targets(app):
+            if inner.is_dir() or inner.suffix == ".dylib":
+                adhoc_sign(inner, quiet=quiet)
+        ents = sanitize_entitlements(extract_entitlements(app))
+        ent_path = write_entitlements_plist(app.name, ents)
+        exe = app / "Contents" / "MacOS"
+        if exe.is_dir():
+            for binp in exe.iterdir():
+                if binp.is_file():
+                    codesign_adhoc(binp, ent_path)
+        codesign_adhoc(app, ent_path)
+        log(f"ad-hoc signed {app.name} entitlements={sorted(ents)}", quiet=quiet)
+        return
+    codesign_adhoc(app, None)
+    log(f"ad-hoc signed {app.name}", quiet=quiet)
+
+
+def remaining_restricted_entitlements(app: Path) -> list[str]:
+    return sorted(k for k in extract_entitlements(app) if not is_adhoc_allowed_entitlement(str(k)))
+
+
+def _run_text(cmd: list[str], timeout: float = 5.0) -> tuple[int, str, str]:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+    return r.returncode, r.stdout or "", r.stderr or ""
+
+
+def macos_gate() -> dict[str, object]:
+    """SIP / Developer Mode / arch. Stock SIP is the supported install path."""
+    arch = platform.machine() or ""
+    sip = "unknown"
+    sip_line = ""
+    debugging_restrictions: bool | None = None
+    code, out, err = _run_text(["csrutil", "status"])
+    text = (out + err).strip()
+    if text:
+        sip_line = text.splitlines()[0]
+        low = text.lower()
+        if "custom configuration" in low:
+            sip = "custom"
+        elif "status: enabled" in low:
+            sip = "enabled"
+        elif "status: disabled" in low:
+            sip = "disabled"
+        for line in text.splitlines():
+            if "debugging restrictions" in line.lower() and ":" in line:
+                val = line.split(":", 1)[1].strip().lower()
+                debugging_restrictions = val == "enabled"
+    developer_mode: bool | None = None
+    code, out, err = _run_text(
+        ["sysctl", "-n", "security.mac.amfi.developer_mode_status"]
+    )
+    if code == 0 and out.strip() in ("0", "1"):
+        developer_mode = out.strip() == "1"
+    return {
+        "arch": arch,
+        "sip": sip,
+        "sip_line": sip_line,
+        "debugging_restrictions": debugging_restrictions,
+        "developer_mode": developer_mode,
+        "apple_silicon": arch in ("arm64", "arm64e"),
+    }
+
+
+def sip_status_label(gate: dict[str, object]) -> str:
+    sip = str(gate.get("sip") or "unknown")
+    debug = gate.get("debugging_restrictions")
+    if sip == "enabled":
+        return "enabled (stock; disabling SIP is not required)"
+    if sip == "custom":
+        if debug is False:
+            return "custom (Debugging Restrictions off; more permissive than stock)"
+        if debug is True:
+            return "custom (Debugging Restrictions on)"
+        return "custom"
+    if sip == "disabled":
+        return "disabled (not required for this installer)"
+    return sip
+
+
+def developer_mode_label(gate: dict[str, object]) -> str:
+    dm = gate.get("developer_mode")
+    if dm is True:
+        return "on"
+    if dm is False:
+        if gate.get("apple_silicon"):
+            return "OFF (Apple Silicon: ad-hoc helper will not launch)"
+        return "off"
+    return "unknown"
+
+
+def helper_launch_blockers(
+    gate: dict[str, object], restricted: list[str]
+) -> list[str]:
+    msgs: list[str] = []
+    if restricted:
+        msgs.append(
+            "AMFI -424: ad-hoc helper still has restricted entitlements: "
+            + ", ".join(restricted)
+            + ". Re-run install; OpenAI team entitlements cannot stay on an ad-hoc signature."
         )
-    exe = app / "Contents" / "MacOS"
-    for binp in exe.iterdir() if exe.is_dir() else []:
-        subprocess.run(
-            [
-                "codesign",
-                "--force",
-                "--sign",
-                "-",
-                "--timestamp=none",
-                "--options",
-                "runtime",
-                "--entitlements",
-                str(ent),
-                str(binp),
-            ],
-            check=False,
-            capture_output=True,
+    if gate.get("apple_silicon") and gate.get("developer_mode") is False:
+        msgs.append(
+            "Apple Silicon Developer Mode is off. The ad-hoc helper will not launch "
+            "on stock SIP. Enable it: System Settings → Privacy & Security → "
+            "Developer Mode, restart, then re-run ./install-computer-use.sh"
         )
+    return msgs
+
+
+def print_macos_gate(
+    gate: dict[str, object],
+    *,
+    restricted: list[str] | None = None,
+) -> None:
+    print(f"arch                {gate.get('arch')}")
+    print(f"SIP                 {sip_status_label(gate)}")
+    print(f"Developer Mode      {developer_mode_label(gate)}")
+    if restricted is not None:
+        blockers = helper_launch_blockers(gate, restricted)
+        print(f"restricted entitlements={restricted or 'none'}")
+        if blockers:
+            print("helper launch gate  blocked")
+            for msg in blockers:
+                print(f"  - {msg}")
+        else:
+            print("helper launch gate  ok (stock SIP path: stripped entitlements + ad-hoc)")
+
+
+def log_install_gate(
+    gate: dict[str, object],
+    restricted: list[str],
+    *,
+    quiet: bool,
+) -> list[str]:
+    blockers = helper_launch_blockers(gate, restricted)
+    if quiet:
+        return blockers
+    log("==== macOS launch gate ====")
+    log(f"SIP: {sip_status_label(gate)}")
+    log(f"Developer Mode: {developer_mode_label(gate)}")
+    log(f"restricted entitlements: {restricted or 'none'}")
+    if blockers:
+        log("helper launch: blocked")
+        log("ACTION REQUIRED (stock SIP — do not disable SIP for this):")
+        for msg in blockers:
+            log(f"  {msg}")
+    else:
+        log("helper launch: ok")
+        log("Stock SIP is enough. Disabling SIP is not a prerequisite.")
+    return blockers
+
+
+APPGROUP_DYLIB_M = r"""
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+#import <stdio.h>
+#import <stdlib.h>
+#import <sys/stat.h>
+
+static void cua_log(const char *msg, const char *extra) {
+    const char *home = getenv("HOME");
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.codex/mcp-wrappers/cua-appgroup.log",
+             home ? home : "/tmp");
+    FILE *fp = fopen(path, "a");
+    if (fp == NULL) {
+        return;
+    }
+    fprintf(fp, "%s %s\n", msg, extra ? extra : "");
+    fclose(fp);
+}
+
+static NSURL *cua_container(NSString *group) {
+    NSString *ident = group.length ? group : @"2DC432GLL2.com.openai.sky.CUAService";
+    NSString *path = [[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Group Containers"]
+                      stringByAppendingPathComponent:ident];
+    [[NSFileManager defaultManager] createDirectoryAtPath:[path stringByAppendingPathComponent:@"IPC"]
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    cua_log("container", ident.UTF8String);
+    return [NSURL fileURLWithPath:path];
+}
+
+@interface NSFileManager (CuaLab)
+- (NSURL *)cualab_containerURLForSecurityApplicationGroupIdentifier:(NSString *)group;
+@end
+
+@implementation NSFileManager (CuaLab)
+- (NSURL *)cualab_containerURLForSecurityApplicationGroupIdentifier:(NSString *)group {
+    return cua_container(group);
+}
+@end
+
+static void cua_swizzle(void) {
+    Class cls = [NSFileManager class];
+    Method orig = class_getInstanceMethod(
+        cls, @selector(containerURLForSecurityApplicationGroupIdentifier:));
+    Method hook = class_getInstanceMethod(
+        cls, @selector(cualab_containerURLForSecurityApplicationGroupIdentifier:));
+    if (orig && hook) {
+        method_exchangeImplementations(orig, hook);
+        cua_log("swizzle", "ok");
+    } else {
+        cua_log("swizzle", "missing-method");
+    }
+}
+
+__attribute__((constructor))
+static void cua_init(void) {
+    const char *home = getenv("HOME");
+    const char *codex = getenv("CODEX_HOME");
+    char pipedir[512];
+    char pipe[512];
+    if (codex != NULL && codex[0] != '\0') {
+        snprintf(pipedir, sizeof(pipedir), "%s/mcp-wrappers/cua-ipc", codex);
+    } else {
+        snprintf(pipedir, sizeof(pipedir), "%s/.codex/mcp-wrappers/cua-ipc",
+                 home ? home : "/tmp");
+    }
+    snprintf(pipe, sizeof(pipe), "%s/computeruse.sock", pipedir);
+    mkdir(pipedir, 0755);
+    setenv("SKY_CUA_SERVICE_NATIVE_PIPE_PATH", pipe, 1);
+    cua_log("constructor", pipe);
+    cua_swizzle();
+}
+"""
+
+
+def appgroup_dylib_path() -> Path:
+    return wrappers_dir() / "cua-appgroup.dylib"
+
+
+def install_appgroup_dylib(*, dry: bool, quiet: bool) -> None:
+    dest = appgroup_dylib_path()
+    if dry:
+        log(f"would compile {dest}", quiet=quiet)
+        return
+    src = backups_dir() / "cua-appgroup.m"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(APPGROUP_DYLIB_M.lstrip("\n"), encoding="utf-8")
     r = subprocess.run(
         [
-            "codesign",
-            "--force",
-            "--sign",
-            "-",
-            "--timestamp=none",
-            "--options",
-            "runtime",
-            "--entitlements",
-            str(ent),
-            str(app),
+            "cc",
+            "-dynamiclib",
+            "-O2",
+            "-framework",
+            "Foundation",
+            "-o",
+            str(dest),
+            str(src),
         ],
         capture_output=True,
         text=True,
     )
     if r.returncode != 0:
-        raise SystemExit(f"codesign failed for {app}: {r.stderr or r.stdout}")
-    log(f"ad-hoc signed {app.name}", quiet=quiet)
+        raise SystemExit(f"cc failed for app-group dylib: {r.stderr or r.stdout}")
+    ents = sanitize_entitlements({})
+    codesign_adhoc(dest, write_entitlements_plist("cua-appgroup.dylib", ents))
+    log(f"app-group dylib: {dest}", quiet=quiet)
+
+
+def insert_load_dylib(macho: Path, install_name: str) -> bool:
+    raw = macho.read_bytes()
+    data = bytearray(raw)
+    if struct.unpack_from("<I", data, 0)[0] != 0xFEEDFACF:
+        raise SystemExit(f"not thin Mach-O 64: {macho}")
+    ncmds, sizeofcmds = struct.unpack_from("<II", data, 16)
+    off = 32
+    min_sect: int | None = None
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from("<II", data, off)
+        if cmd in (0xC, 0x18, 0x80000018, 0x8000000C):
+            nameoff = struct.unpack_from("<I", data, off + 8)[0]
+            name = data[off + nameoff : off + cmdsize].split(b"\0", 1)[0].decode(errors="replace")
+            if "cua-appgroup.dylib" in name:
+                return False
+        if cmd == 0x19:
+            segname = data[off + 8 : off + 24].split(b"\0", 1)[0]
+            nsects = struct.unpack_from("<I", data, off + 64)[0]
+            so = off + 72
+            for _s in range(nsects):
+                sectoff = struct.unpack_from("<I", data, so + 48)[0]
+                if segname == b"__TEXT" and sectoff > 0:
+                    if min_sect is None or sectoff < min_sect:
+                        min_sect = sectoff
+                so += 80
+        off += cmdsize
+    name_b = install_name.encode() + b"\0"
+    name_off = 24
+    pad = (8 - ((name_off + len(name_b)) % 8)) % 8
+    cmdsize = name_off + len(name_b) + pad
+    if min_sect is None or 32 + sizeofcmds + cmdsize > min_sect:
+        raise SystemExit(f"no Mach-O header padding for LC_LOAD_DYLIB in {macho}")
+    blob = struct.pack("<II", 0xC, cmdsize)
+    blob += struct.pack("<IIII", name_off, 0, 0x10000, 0x10000)
+    blob += name_b + (b"\0" * pad)
+    if len(blob) != cmdsize:
+        raise SystemExit("dylib command size mismatch")
+    insert_at = 32 + sizeofcmds
+    data[insert_at : insert_at + cmdsize] = blob
+    struct.pack_into("<I", data, 16, ncmds + 1)
+    struct.pack_into("<I", data, 20, sizeofcmds + cmdsize)
+    macho.write_bytes(data)
+    return True
+
+
+def inject_appgroup_dylib(app: Path, *, dry: bool, quiet: bool) -> None:
+    svc = app / "Contents" / "MacOS" / "SkyComputerUseService"
+    dest = app / "Contents" / "MacOS" / "cua-appgroup.dylib"
+    leftover = app / "Contents" / "MacOS" / "SkyComputerUseLabLauncher"
+    if leftover.exists() and not dry:
+        leftover.unlink()
+    if dry:
+        log(f"would inject {dest} into {svc.name}", quiet=quiet)
+        return
+    install_appgroup_dylib(dry=dry, quiet=quiet)
+    src = appgroup_dylib_path()
+    if src.exists():
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o755)
+    if svc.is_file() and insert_load_dylib(svc, "@executable_path/cua-appgroup.dylib"):
+        log(f"inserted LC_LOAD_DYLIB cua-appgroup.dylib into {svc.name}", quiet=quiet)
+    else:
+        log(f"LC_LOAD_DYLIB already present in {svc.name}", quiet=quiet)
+
+
+def configure_native_pipe(app: Path, *, dry: bool, quiet: bool) -> None:
+    pipe = native_pipe_path()
+    info = app / "Contents" / "Info.plist"
+    if not info.exists():
+        return
+    data = plistlib.loads(info.read_bytes())
+    env = data.get("LSEnvironment")
+    if not isinstance(env, dict):
+        env = {}
+    env["SKY_CUA_SERVICE_NATIVE_PIPE_PATH"] = str(pipe)
+    data["LSEnvironment"] = env
+    data["CFBundleExecutable"] = "SkyComputerUseService"
+    if dry:
+        log(f"would set pipe {pipe} and inject app-group dylib", quiet=quiet)
+        return
+    pipe.parent.mkdir(parents=True, exist_ok=True)
+    backup_file(info)
+    info.write_bytes(plistlib.dumps(data))
+    inject_appgroup_dylib(app, dry=dry, quiet=quiet)
+    log(f"native pipe: {pipe}", quiet=quiet)
 
 
 def set_defaults(*, quiet: bool) -> None:
@@ -559,16 +968,27 @@ def patch_mcp_json(*, dry: bool, quiet: bool) -> int:
                 continue
             dirs = env.get("NODE_REPL_NODE_MODULE_DIRS", "")
             parts = [p for p in str(dirs).split(":") if p]
-            if overlay in parts:
-                continue
-            parts = [overlay] + parts
-            env["NODE_REPL_NODE_MODULE_DIRS"] = ":".join(parts)
+            dirty = False
+            if overlay not in parts:
+                parts = [overlay] + parts
+                env["NODE_REPL_NODE_MODULE_DIRS"] = ":".join(parts)
+                dirty = True
             trusted = env.get("NODE_REPL_TRUSTED_CODE_PATHS", "")
             tparts = [p for p in str(trusted).split(":") if p]
             if overlay not in tparts:
                 tparts.append(overlay)
                 env["NODE_REPL_TRUSTED_CODE_PATHS"] = ":".join(tparts)
-            env.setdefault("SKY_CUA_SERVICE_PATH", str(cua_user_app()))
+                dirty = True
+            service = str(cua_user_app())
+            if env.get("SKY_CUA_SERVICE_PATH") != service:
+                env["SKY_CUA_SERVICE_PATH"] = service
+                dirty = True
+            pipe = str(native_pipe_path())
+            if env.get("SKY_CUA_SERVICE_NATIVE_PIPE_PATH") != pipe:
+                env["SKY_CUA_SERVICE_NATIVE_PIPE_PATH"] = pipe
+                dirty = True
+            if not dirty:
+                continue
             if dry:
                 log(f"would patch {mcp}", quiet=quiet)
                 changed += 1
@@ -581,7 +1001,10 @@ def patch_mcp_json(*, dry: bool, quiet: bool) -> int:
 
 
 def kill_cua(*, quiet: bool) -> None:
-    subprocess.run(["killall", "SkyComputerUseService", "SkyComputerUseClient"], capture_output=True)
+    subprocess.run(
+        ["killall", "SkyComputerUseService", "SkyComputerUseClient"],
+        capture_output=True,
+    )
     log("stopped running Computer Use helpers", quiet=quiet)
 
 
@@ -695,6 +1118,11 @@ def unpersist_macos(*, quiet: bool) -> None:
 def cmd_install(args: argparse.Namespace) -> int:
     if not IS_MAC:
         raise SystemExit("Computer Use native patch is macOS-only")
+    with install_lock():
+        return _cmd_install(args)
+
+
+def _cmd_install(args: argparse.Namespace) -> int:
     app = ensure_user_app(dry=args.dry_run, quiet=args.quiet)
     svc = app / "Contents" / "MacOS" / "SkyComputerUseService"
     client = (
@@ -714,23 +1142,37 @@ def cmd_install(args: argparse.Namespace) -> int:
     patch_kill_messages_in_tree(app, dry=args.dry_run, quiet=args.quiet)
     relax_parent_requirement(app, dry=args.dry_run, quiet=args.quiet)
     disable_sparkle(app, dry=args.dry_run, quiet=args.quiet)
+    configure_native_pipe(app, dry=args.dry_run, quiet=args.quiet)
     build_js_overlay(dry=args.dry_run, quiet=args.quiet)
     patch_mcp_json(dry=args.dry_run, quiet=args.quiet)
     persist = getattr(args, "persist", True)
+    restricted: list[str] = []
     if not args.dry_run:
-        client_app = app / "Contents" / "SharedSupport" / "SkyComputerUseClient.app"
-        if client_app.is_dir():
-            adhoc_sign(client_app, quiet=args.quiet)
         adhoc_sign(app, quiet=args.quiet)
         subprocess.run(["xattr", "-cr", str(app)], capture_output=True)
+        restricted = remaining_restricted_entitlements(app)
+        if restricted:
+            raise SystemExit(
+                "ad-hoc helper still has restricted entitlements "
+                f"(AMFI -424 on stock SIP): {restricted}"
+            )
         if persist:
             persist_macos(quiet=args.quiet)
+    gate = macos_gate()
+    blockers = log_install_gate(gate, restricted, quiet=args.quiet)
     log(
         "done. Restart ChatGPT.app and start a NEW Computer Use turn. "
         "Re-grant Accessibility / Screen Recording if macOS prompts "
         "(ad-hoc signature is a new identity).",
         quiet=args.quiet,
     )
+    if (
+        blockers
+        and getattr(args, "cmd", "") == "install"
+        and not args.quiet
+        and not args.dry_run
+    ):
+        return 2
     return 0
 
 
@@ -747,6 +1189,10 @@ def cmd_status(args: argparse.Namespace) -> int:
         / "SkyComputerUseClient"
     )
     print(f"platform            {sys.platform}")
+    restricted: list[str] | None = None
+    if svc.exists():
+        restricted = remaining_restricted_entitlements(app)
+    print_macos_gate(macos_gate(), restricted=restricted)
     print(f"user CUA app        {app} exists={app.exists()}")
     print(f"service             {svc} exists={svc.exists()}")
     if svc.exists():
@@ -773,9 +1219,25 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"service allowForbidden patched={allow}")
         print(f"service blockedURL mapper patched={THROW_MAPPED_OLD not in raw}")
         print(f"service kill message rewritten={KILL_MSG not in raw}")
+        ident = subprocess.run(
+            ["codesign", "-dv", str(app)], capture_output=True, text=True
+        )
+        team = "unknown"
+        sig = "unknown"
+        for line in (ident.stderr or "").splitlines():
+            if line.startswith("TeamIdentifier="):
+                team = line.split("=", 1)[1]
+            if line.startswith("Signature="):
+                sig = line.split("=", 1)[1]
+        print(f"signature            {sig} team={team}")
+        prov = app / "Contents" / "embedded.provisionprofile"
+        print(f"provisionprofile     exists={prov.exists()}")
     if client.exists():
         raw = client.read_bytes()
         print(f"client kill message rewritten={KILL_MSG not in raw}")
+    print(f"native pipe          {native_pipe_path()}")
+    injected = app / "Contents" / "MacOS" / "cua-appgroup.dylib"
+    print(f"app-group dylib      {injected} exists={injected.exists()}")
     print(f"JS overlay          {overlay_modules()} exists={overlay_modules().exists()}")
     agent = home() / "Library" / "LaunchAgents" / f"{CUA_LABEL}.plist"
     print(f"LaunchAgent         {agent} exists={agent.exists()}")
